@@ -125,8 +125,16 @@ function GltfAnatomyModels({ url }: { url: string }) {
                   color={state.color}
                   transparent={state.opacity < 1}
                   opacity={state.opacity}
+                  depthWrite={state.opacity >= 1}
                   roughness={0.4}
                   metalness={0.1}
+                  // transparent/opacity の変更を確実に再描画へ反映させるため、
+                  // 各コミット後に needsUpdate を明示する(ModelLoader の
+                  // applyDisplayState と同じ理由。R3F の宣言的プロパティ更新
+                  // だけでは three.js 側に反映されないケースがあるため)。
+                  onUpdate={(material) => {
+                    material.needsUpdate = true;
+                  }}
                 />
               </mesh>
             );
