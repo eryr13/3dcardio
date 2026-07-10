@@ -49,6 +49,10 @@
   background: #283744;
 }
 
+.reset-display-button {
+  margin-top: 14px;
+}
+
 .clip-axis {
   margin-bottom: 12px;
 }
@@ -72,15 +76,23 @@
 }
 
 .anatomy-legend li {
-  margin-bottom: 8px;
+  margin-bottom: 14px;
 }
 
-.anatomy-legend label {
+.anatomy-legend li:last-child {
+  margin-bottom: 0;
+}
+
+.anatomy-item-header {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 0.9rem;
   cursor: pointer;
+}
+
+.anatomy-item {
+  margin-bottom: 14px;
 }
 
 .legend-swatch {
@@ -91,10 +103,62 @@
   flex-shrink: 0;
 }
 
+.color-picker {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid #2f3d4a;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.opacity-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #9fb0c0;
+  margin-top: 4px;
+  padding-left: 20px;
+  box-sizing: border-box;
+}
+
+.opacity-control input[type="range"] {
+  flex: 1;
+}
+
+.opacity-value {
+  min-width: 34px;
+  text-align: right;
+  color: #e6edf3;
+}
+
 .panel-note {
   font-size: 0.78rem;
   color: #6d7d8c;
   margin: 8px 0 0;
+}
+
+.segment-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  margin: 0 0 10px;
+}
+
+.segment-tooltip {
+  background: #1f2a35;
+  color: #e6edf3;
+  border: 1px solid #3d8bfd;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  transform: translate(12px, -12px);
 }
 
 .viewer-area {

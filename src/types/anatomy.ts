@@ -17,10 +17,17 @@ export interface AnatomyDisplayState {
   opacity: number;
 }
 
-/** 血管1本分の状態。将来的にセグメント分割する場合は segments を追加する想定 */
+/**
+ * 血管1本(または将来的には1セグメント)分の状態。
+ * 現状は RCA/LAD/LCX という主幹単位だが、将来 AHA 分類のセグメント番号
+ * (#1〜#15 等)単位に分割する場合も、同じ形のエントリを増やし
+ * parentVessel で所属する主幹を示すだけで対応できるようにしてある。
+ * 主幹自体(現状の RCA/LAD/LCX)は parentVessel: null。
+ */
 export interface VesselState extends AnatomyDisplayState {
-  id: VesselId;
+  id: string;
   name: string;
+  parentVessel: VesselId | null;
 }
 
 export interface HeartState extends AnatomyDisplayState {
