@@ -1,5 +1,6 @@
 import { SidePanel } from "./components/ui/SidePanel";
 import { Scene } from "./components/viewer/Scene";
+import { CinePanel } from "./components/ui/CinePanel";
 import "./App.css";
 
 function App() {
@@ -9,6 +10,7 @@ function App() {
       <main className="viewer-area">
         <Scene />
       </main>
+      <CinePanel />
     </div>
   );
 }

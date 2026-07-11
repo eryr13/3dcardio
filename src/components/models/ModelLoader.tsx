@@ -4,6 +4,7 @@ import type { BufferGeometry, Mesh, MeshStandardMaterial, Vector3 } from "three"
 import type { AnatomyDisplayState, VesselId, ModelSource } from "../../types/anatomy";
 import { useCardioStore } from "../../store/useCardioStore";
 import { HeartModel } from "./HeartModel";
+import { HeartbeatGroup } from "./HeartbeatGroup";
 import { VesselModel } from "./VesselModel";
 import { SEGMENT_DEFS, splitGeometryByLength } from "./vesselSegments";
 
@@ -32,12 +33,14 @@ export function AnatomyModels({ source = { type: "gltf", url: REALISTIC_HEART_UR
   }
 
   return (
-    <group name="AnatomyRoot">
-      <HeartModel />
-      {VESSEL_IDS.map((id) => (
-        <VesselModel key={id} id={id} />
-      ))}
-    </group>
+    <HeartbeatGroup>
+      <group name="AnatomyRoot">
+        <HeartModel />
+        {VESSEL_IDS.map((id) => (
+          <VesselModel key={id} id={id} />
+        ))}
+      </group>
+    </HeartbeatGroup>
   );
 }
 
@@ -92,7 +95,7 @@ function GltfAnatomyModels({ url }: { url: string }) {
   }, [meshesByName]);
 
   return (
-    <>
+    <HeartbeatGroup>
       <primitive object={scene} />
       {segmentMode &&
         VESSEL_IDS.flatMap((trunkId) => {
@@ -145,7 +148,7 @@ function GltfAnatomyModels({ url }: { url: string }) {
           <div className="segment-tooltip">{vessels[hovered.id].name}</div>
         </Html>
       )}
-    </>
+    </HeartbeatGroup>
   );
 }
 

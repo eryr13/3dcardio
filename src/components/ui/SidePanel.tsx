@@ -1,6 +1,7 @@
 import { ViewControls } from "./ViewControls";
 import { ClippingControls } from "./ClippingControls";
 import { AnatomyLegend } from "./AnatomyLegend";
+import { CineControls } from "./CineControls";
 
 export function SidePanel() {
   return (
@@ -9,6 +10,7 @@ export function SidePanel() {
       <ViewControls />
       <ClippingControls />
       <AnatomyLegend />
+      <CineControls />
     </aside>
   );
 }
