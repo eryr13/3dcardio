@@ -17,6 +17,7 @@ export function CineControls() {
   const pauseCine = useCardioStore((s) => s.pauseCine);
   const setCineFps = useCardioStore((s) => s.setCineFps);
   const setCineShowHeartOutline = useCardioStore((s) => s.setCineShowHeartOutline);
+  const setCineRealisticMode = useCardioStore((s) => s.setCineRealisticMode);
   const [exportError, setExportError] = useState<string | null>(null);
 
   async function handleExport(kind: "gif" | "png") {
@@ -67,6 +68,22 @@ export function CineControls() {
         />
         心臓の輪郭を表示(シネビュー)
       </label>
+
+      <label className="segment-mode-toggle">
+        <input
+          type="checkbox"
+          checked={cine.realisticMode}
+          disabled={!cine.enabled}
+          onChange={(e) => setCineRealisticMode(e.target.checked)}
+        />
+        リアルなアンギオ風表示に切り替え
+      </label>
+      {cine.realisticMode && (
+        <p className="panel-note">
+          コントラスト強調・ビネット(周辺減光)・フィルムグレインを後処理で加えた表示です。
+          オフにするといつものシンプルなシルエット表示に戻ります。
+        </p>
+      )}
 
       <div className="cine-export-buttons">
         <button type="button" disabled={!cine.enabled || cine.exporting} onClick={() => handleExport("gif")}>

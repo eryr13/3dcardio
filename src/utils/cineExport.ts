@@ -3,6 +3,7 @@ import { zipSync } from "fflate";
 import { useCardioStore } from "../store/useCardioStore";
 import type { CineSceneHandle } from "../components/models/cineSceneBridge";
 import { computeHeartbeatTransform } from "./heartbeatAnimation";
+import { applyCineRealism } from "./cineRealism";
 
 /** 書き出す長さ(秒)。0.5秒周期なら4サイクル分で、ループ用途として十分な長さの定数。 */
 const EXPORT_DURATION_SECONDS = 2;
@@ -33,6 +34,7 @@ async function captureCineFrames(handle: CineSceneHandle, fps: number): Promise<
   const ctx = offscreen.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("2D contextの取得に失敗しました");
 
+  const { realisticMode } = useCardioStore.getState().cine;
   const frameCount = Math.max(1, Math.round(EXPORT_DURATION_SECONDS * fps));
   const frames: ImageData[] = [];
 
@@ -43,6 +45,8 @@ async function captureCineFrames(handle: CineSceneHandle, fps: number): Promise<
     pulseGroup.rotation.y = transform.twistY;
     gl.render(scene, camera);
     ctx.drawImage(canvasEl, 0, 0, width, height);
+    // ライブ表示(CineRealismOverlay.tsx)と同じ後処理を書き出しにもかけ、見た目を一致させる
+    if (realisticMode) applyCineRealism(ctx, width, height);
     frames.push(ctx.getImageData(0, 0, width, height));
     // UIが固まらないよう数フレームごとに1tick譲る
     if (i % 4 === 3) {

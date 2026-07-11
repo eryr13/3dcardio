@@ -17,6 +17,11 @@ export interface CineState {
   fps: CineFps;
   /** シネビューで心臓を薄い輪郭として表示するか(false = 完全非表示) */
   showHeartOutline: boolean;
+  /**
+   * true でアンギオ風の質感(コントラスト強調+ビネット+フィルムグレイン)を
+   * 後処理で加える「リアルモード」。既定はfalse(従来のシンプルなシルエット表示)。
+   */
+  realisticMode: boolean;
   /** GIF/PNG書き出し中フラグ。true の間はライブの拍動更新を止め、書き出しループがscaleを直接制御する */
   exporting: boolean;
 }

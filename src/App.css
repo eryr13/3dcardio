@@ -212,6 +212,7 @@
 }
 
 .cine-canvas-wrap {
+  position: relative;
   width: 100%;
   aspect-ratio: 1 / 1;
   border: 1px solid #2f3d4a;
@@ -223,6 +224,13 @@
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* リアルモード用の2Dオーバーレイ。WebGL側は裏で描画を続けたまま、見た目だけ
+   このcanvasで覆う(絶対配置+DOM順で後勝ちなので、明示的な非表示指定は不要)。 */
+.cine-realism-canvas {
+  position: absolute;
+  inset: 0;
 }
 
 .cine-transport {
@@ -268,4 +276,62 @@
 
 .cine-export-error {
   color: #e8877f;
+}
+
+.axis-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.axis-preset-button {
+  width: 100%;
+  padding: 6px 4px;
+  font-size: 0.78rem;
+  background: #1f2a35;
+  color: #e6edf3;
+  border: 1px solid #2f3d4a;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.axis-preset-button:hover {
+  background: #283744;
+}
+
+.axis-preset-button.active {
+  background: #3d8bfd;
+  border-color: #3d8bfd;
+  color: #0b0f14;
+  font-weight: 600;
+}
+
+.carm-readout {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #e6edf3;
+  margin: 0 0 12px;
+}
+
+.carm-angle-input {
+  width: 56px;
+  padding: 3px 6px;
+  background: #1f2a35;
+  color: #e6edf3;
+  border: 1px solid #2f3d4a;
+  border-radius: 4px;
+  text-align: right;
+}
+
+.carm-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.carm-preset-grid button {
+  font-size: 0.76rem;
+  padding: 6px 4px;
 }

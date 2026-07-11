@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { PerspectiveCamera } from "three";
 import type {
   CameraState,
   ClippingAxis,
@@ -7,7 +8,15 @@ import type {
   VesselState,
 } from "../types/anatomy";
 import type { CineFps, CineState } from "../types/cine";
+import type { PatientFrameCalibration } from "../types/cArmCalibration";
+import { DEFAULT_CALIBRATION } from "../types/cArmCalibration";
 import { buildSegmentVesselStates } from "../components/models/vesselSegments";
+
+/**
+ * メインビューの初期カメラ位置。CameraRig.tsx が実際にマウントした際もこの値を使う
+ * (このファイルからimportする、二重定義しない)。
+ */
+export const DEFAULT_CAMERA_POSITION: [number, number, number] = [4, 2.5, 5];
 
 interface CardioStore {
   heart: HeartState;
@@ -40,14 +49,35 @@ interface CardioStore {
   setCamera: (camera: CameraState) => void;
   requestCameraReset: () => void;
 
+  calibration: PatientFrameCalibration;
+  /** 頭側の基準軸をシーンローカルの軸プリセット(±X/±Y/±Z)から設定する */
+  setHeadAxis: (axis: [number, number, number]) => void;
+  /** 現在のメインビューのカメラ位置方向を「AP正面」として記録する */
+  setApAxisFromCurrentCamera: () => void;
+
+  /**
+   * インクリメントする nonce 付きのリクエストオブジェクト。CameraRig 側がこれの変化を
+   * 検知してカメラをその角度へアニメーション移動させる(resetCameraSignal と同じ
+   * 「シグナル駆動」パターン)。
+   */
+  cameraAngleRequest: CameraAngleRequest | null;
+  requestCameraAngles: (raoLao: number, craCaud: number) => void;
+
   cine: CineState;
   setCineEnabled: (enabled: boolean) => void;
   playCine: () => void;
   pauseCine: () => void;
   setCineFps: (fps: CineFps) => void;
   setCineShowHeartOutline: (show: boolean) => void;
+  setCineRealisticMode: (v: boolean) => void;
   setCineExporting: (exporting: boolean) => void;
   setCinePanelWidth: (width: number) => void;
+}
+
+export interface CameraAngleRequest {
+  raoLao: number;
+  craCaud: number;
+  nonce: number;
 }
 
 const CINE_PANEL_MIN_WIDTH = 260;
@@ -68,10 +98,30 @@ const initialClipping: ClippingState = {
   z: { enabled: false, position: 0 },
 };
 
-const initialCamera: CameraState = {
-  position: { x: 0, y: 0, z: 0 },
-  quaternion: [0, 0, 0, 1],
-};
+/**
+ * store.camera の初期値。heart-realistic.glb(2.6MB)の読み込み中はR3F CanvasのSuspense
+ * (Canvasが暗黙に提供する)によりCameraRig自体がまだマウントされておらず、この初期値が
+ * そのまま(数百ms〜数秒)表示され得る。単なる原点/単位クォータニオンにすると、
+ * サイドパネルのCアーム角度表示がその間ずっと無意味な値(例: RAO 41°など)になって
+ * しまうため、CameraRigが実際に設定するのと同じ「DEFAULT_CAMERA_POSITIONから原点を
+ * 注視した姿勢」をあらかじめ計算しておく。
+ *
+ * ダミーオブジェクトは必ず Camera(または isCamera フラグを持つもの)にすること。
+ * three.js の Object3D.lookAt() は isCamera / isLight のときだけ「自分の位置から
+ * ターゲットを見る」向きになり、それ以外の Object3D では引数が入れ替わり真逆の
+ * 姿勢になる(three.js の仕様。実機で180度ズレる不具合として発見し特定した)。
+ */
+function computeInitialCamera(): CameraState {
+  const dummy = new PerspectiveCamera();
+  dummy.position.set(...DEFAULT_CAMERA_POSITION);
+  dummy.lookAt(0, 0, 0);
+  return {
+    position: { x: DEFAULT_CAMERA_POSITION[0], y: DEFAULT_CAMERA_POSITION[1], z: DEFAULT_CAMERA_POSITION[2] },
+    quaternion: [dummy.quaternion.x, dummy.quaternion.y, dummy.quaternion.z, dummy.quaternion.w],
+  };
+}
+
+const initialCamera: CameraState = computeInitialCamera();
 
 /** 既定では拍動なし(静止)で、再生ボタンを押した時だけ動き始める */
 const initialCine: CineState = {
@@ -82,6 +132,7 @@ const initialCine: CineState = {
   accumulatedSeconds: 0,
   fps: 30,
   showHeartOutline: false,
+  realisticMode: false,
   exporting: false,
 };
 
@@ -137,6 +188,26 @@ export const useCardioStore = create<CardioStore>((set) => ({
   requestCameraReset: () =>
     set((state) => ({ resetCameraSignal: state.resetCameraSignal + 1 })),
 
+  calibration: DEFAULT_CALIBRATION,
+
+  setHeadAxis: (axis) =>
+    set((state) => ({ calibration: { ...state.calibration, headAxis: axis } })),
+
+  setApAxisFromCurrentCamera: () =>
+    set((state) => ({
+      calibration: {
+        ...state.calibration,
+        apAxis: [state.camera.position.x, state.camera.position.y, state.camera.position.z],
+      },
+    })),
+
+  cameraAngleRequest: null,
+
+  requestCameraAngles: (raoLao, craCaud) =>
+    set((state) => ({
+      cameraAngleRequest: { raoLao, craCaud, nonce: (state.cameraAngleRequest?.nonce ?? 0) + 1 },
+    })),
+
   cine: initialCine,
 
   // 拍動はメインビューにも常時適用されるため、シネパネルの表示/非表示は
@@ -155,6 +226,9 @@ export const useCardioStore = create<CardioStore>((set) => ({
 
   setCineShowHeartOutline: (showHeartOutline) =>
     set((state) => ({ cine: { ...state.cine, showHeartOutline } })),
+
+  setCineRealisticMode: (realisticMode) =>
+    set((state) => ({ cine: { ...state.cine, realisticMode } })),
 
   setCineExporting: (exporting) => set((state) => ({ cine: { ...state.cine, exporting } })),
 

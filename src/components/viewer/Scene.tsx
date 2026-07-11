@@ -1,5 +1,6 @@
 import { Canvas } from "@react-three/fiber";
 import { AnatomyModels } from "../models/ModelLoader";
+import { AnatomyAxesGizmo } from "./AnatomyAxesGizmo";
 import { CameraRig } from "./CameraRig";
 import { ClippingPlanes } from "./ClippingPlanes";
 
@@ -25,6 +26,7 @@ export function Scene() {
       <directionalLight position={[-5, -3, -4]} intensity={0.3} />
 
       <AnatomyModels />
+      <AnatomyAxesGizmo />
 
       <CameraRig />
       <ClippingPlanes />
