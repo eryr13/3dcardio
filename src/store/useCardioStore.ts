@@ -182,10 +182,7 @@ export const DEFAULT_CINE_XRAY_PARAMS: CineXrayParams = {
   calcificationAbsorption: 25,
   stentAbsorption: 45,
   showBackgroundAnatomy: false,
-  heartShadowIntensity: 0.4,
-  heartShadowSpread: 0.02,
-  heartShadowOffsetX: 0,
-  heartShadowOffsetY: 0,
+  heartAbsorption: 1.0,
   vesselsOnly: false,
 };
 

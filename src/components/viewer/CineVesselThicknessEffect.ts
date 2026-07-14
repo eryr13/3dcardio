@@ -13,7 +13,6 @@ import {
   Scene,
   ShaderMaterial,
   Uniform,
-  Vector2,
   WebGLRenderer,
   WebGLRenderTarget,
 } from "three";
@@ -26,10 +25,6 @@ const VESSEL_IDS: VesselId[] = ["RCA", "LAD", "LCX"];
  * 本編Canvasの実ピクセルサイズとは無関係に固定できる(アスペクト比の不一致は起きない)。
  */
 const PEEL_RESOLUTION = 512;
-
-/** 心臓の陰影のBeer-Lambert吸収係数。血管と違いスライダー化はせず、代わりに
- * uHeartIntensity(頭打ちキャップ)で見た目の濃さを調整する(血管との視覚的分離のため)。 */
-const HEART_ABSORPTION = 6.0;
 
 /**
  * このシェーダーが同時にバインドするsampler2Dユニフォームの総数
@@ -50,42 +45,19 @@ const HEART_ABSORPTION = 6.0;
 const REQUIRED_TEXTURE_UNITS = 1 + 3;
 
 /**
- * アキュムレータへの加算/減算を担う頂点シェーダー。血管は近位度(aProximity)による
- * テーパー(先細り)処理が必要なため専用の頂点属性を持つ。心臓・オブジェクトは
- * この属性を持たないジオメトリなので、別途「テーパー無し」版を使う(下のGENERIC*)。
+ * アキュムレータへの加算/減算を担う頂点/フラグメントシェーダー。血管・心臓・
+ * オブジェクトのいずれも同じこのシェーダーを共有する。
+ *
+ * 以前は血管だけ、頂点属性aProximity(ローカルY座標から求めた「近位度」)による
+ * テーパー(末梢ほど薄くする)を掛けていたが、これが実機検証で重大な不具合の原因と
+ * 判明したため廃止した: 視線方向に沿って走る(=画面上で大きく短縮して見える)血管
+ * では、深度ピールの前面ヒットと背面ヒットが血管の大きく離れた位置(=近位度が
+ * 大きく異なる頂点)から来ることがあり、前面用と背面用で異なるテーパー値を
+ * 掛けてから差分を取ると「back*taper_back - front*taper_front」が実際の厚みより
+ * 大幅に過小評価される(酷い場合はほぼ消える)ことを確認した。実際のX線透視では
+ * 視線方向に長く続く血管ほど造影剤の厚みが増して濃く写るべきであり、この
+ * テーパーは物理的にも正しくなかった。
  */
-const VESSEL_ACCUM_VERTEX_SHADER = /* glsl */ `
-attribute float aProximity;
-varying float vViewZ;
-varying float vProximity;
-void main() {
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-  vViewZ = -mvPosition.z;
-  vProximity = aProximity;
-  gl_Position = projectionMatrix * mvPosition;
-}
-`;
-
-/**
- * uSignは背面パスなら+1、前面パスなら-1。加算ブレンドで同じレンダーターゲットに
- * 前面パス・背面パスを重ね書きすることで、ターゲットの値は自動的に
- * Σ(backViewZ - frontViewZ) = Σ(そのオブジェクトの厚み) になる
- * (何も描かれていない画素は加算されないので0のまま=hitマスク不要)。
- * 近位(aProximity=1)ほど太く濃く、遠位(=0)でも完全には消えないよう下限を設けるテーパーを
- * 厚みに掛けてから加算する(実際の造影剤希釈による先細りの近似)。
- */
-const VESSEL_ACCUM_FRAGMENT_SHADER = /* glsl */ `
-uniform float uSign;
-varying float vViewZ;
-varying float vProximity;
-void main() {
-  float taper = mix(0.35, 1.0, vProximity);
-  gl_FragColor = vec4(uSign * vViewZ * taper, 0.0, 0.0, 0.0);
-}
-`;
-
-// 心臓・オブジェクト用はテーパー無しのシンプルな深度書き込みシェーダー
-// (血管シェーダーと共有すると不要な頂点属性をジオメトリに要求してしまうため分けている)。
 const GENERIC_ACCUM_VERTEX_SHADER = /* glsl */ `
 varying float vViewZ;
 void main() {
@@ -117,9 +89,7 @@ uniform float uAbsorption;
 uniform float uBlurRadius;
 
 uniform sampler2D uHeartAccum;
-uniform float uHeartIntensity;
-uniform float uHeartBlurRadius;
-uniform vec2 uHeartOffset;
+uniform float uHeartAbsorption;
 
 uniform sampler2D uObjectAccum;
 
@@ -140,26 +110,6 @@ float blurredThickness(vec2 uv) {
   return sum / weight;
 }
 
-// 心臓は「輪郭ではなく滲んだ塊」に見えるよう、血管より広い半径・多いサンプル数
-// (半径r・2rの2重リング、それぞれ8方向)でぼかす。3D形状そのものが中心ほど厚いため、
-// 追加のグラデーション生成ロジックなしで「中心が濃く外周が薄い」見た目が自然に出る。
-float blurredHeartThickness(vec2 uv) {
-  if (uHeartBlurRadius < 0.0001) return max(0.0, texture2D(uHeartAccum, uv).r);
-  float sum = max(0.0, texture2D(uHeartAccum, uv).r) * 3.0;
-  float weight = 3.0;
-  const int SAMPLES = 8;
-  for (int ring = 1; ring <= 2; ring++) {
-    float radius = uHeartBlurRadius * float(ring);
-    for (int i = 0; i < SAMPLES; i++) {
-      float angle = 6.28318530718 * (float(i) / float(SAMPLES));
-      vec2 offset = vec2(cos(angle), sin(angle)) * radius;
-      sum += max(0.0, texture2D(uHeartAccum, uv + offset).r);
-      weight += 1.0;
-    }
-  }
-  return sum / weight;
-}
-
 // カメラが常に心臓中心を注視するため、心臓はほぼ常に画面中央に投影される。これを利用し、
 // 3D位置計算をせず画面UV空間の中心からの距離だけで肺野(明)/縦隔(暗)の帯を近似する。
 float lungBrighten(vec2 uv) {
@@ -168,22 +118,32 @@ float lungBrighten(vec2 uv) {
   return mix(1.0, 1.35, t);
 }
 
+// 心臓・血管・オブジェクト(石灰化/ステント)のいずれも「同じ物理量(X線減弱係数)」として
+// 扱い、それぞれの光学的厚み(厚み×吸収係数)を単純加算してから最後に1回だけ
+// exp(-合計)を掛けるBeer-Lambert則そのものの合成にする。心臓の厚みは実際の心臓
+// メッシュを血管と全く同じ深度ピールで積算した生の値をそのまま使う(疑似的な
+// ぼかし・位置ずらしの後処理は行わない。以前あった「広がり」「中心位置」パラメータは
+// 心臓メッシュとは無関係な後処理で、これがぼかし半径次第で心臓の光学的厚みを
+// 際限なく増大させ、血管ごと埋もれさせてしまう不具合の原因だったため廃止した)。
+// 心臓の陰影を血管の上に重なる不透明な層として別合成すると、心臓が厚い角度
+// (例: 頭側から見下ろす角度)で血管のコントラストごと薄れてしまう(実際のX線透視では
+// そのようなことは起こらない、造影剤は心筋よりX線吸収が桁違いに高いため、心臓が
+// 厚くてもその上に血管が常にはっきり描出される)。加算合成なら、心臓の光学的厚みが
+// どれだけ大きくなっても血管自身の光学的厚み(vesselThickness×uAbsorption)は独立に
+// 上乗せされ続けるため、血管吸収係数を心筋吸収係数より十分大きく設定しておけば、
+// 血管のコントラストがカメラ角度によって埋もれることは構造的に起こらない。
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
   vec3 toned = inputColor.rgb * lungBrighten(uv);
 
-  float vesselThicknessTotal = blurredThickness(uv);
-  float vesselDarkness = 1.0 - exp(-vesselThicknessTotal * uAbsorption);
-
-  float heartThicknessTotal = blurredHeartThickness(uv + uHeartOffset);
-  float heartDarkness = (1.0 - exp(-heartThicknessTotal * ${HEART_ABSORPTION.toFixed(1)})) * uHeartIntensity;
-
+  float vesselOpticalDepth = blurredThickness(uv) * uAbsorption;
+  float heartOpticalDepth = max(0.0, texture2D(uHeartAccum, uv).r) * uHeartAbsorption;
   // オブジェクトアキュムレータは各オブジェクト自身の吸収係数を既に加算前に掛けてあるため、
-  // ここでの合計値がそのままBeer-Lambert則の吸光度(optical depth)になる(ブラーは掛けない
-  // = 石灰化のくっきりした高吸収感、ステントの細線らしさを保つ)。
+  // ここではそのまま光学的厚みとして合計に加える(ブラーは掛けない=石灰化のくっきりした
+  // 高吸収感、ステントの細線らしさを保つ)。
   float objectOpticalDepth = max(0.0, texture2D(uObjectAccum, uv).r);
-  float objectDarkness = 1.0 - exp(-objectOpticalDepth);
 
-  vec3 color = toned * (1.0 - heartDarkness) * (1.0 - vesselDarkness) * (1.0 - objectDarkness);
+  float totalOpticalDepth = vesselOpticalDepth + heartOpticalDepth + objectOpticalDepth;
+  vec3 color = toned * exp(-totalOpticalDepth);
   outputColor = vec4(color, inputColor.a);
 }
 `;
@@ -247,10 +207,7 @@ function createPeelTarget(): WebGLRenderTarget {
 interface CineVesselThicknessEffectOptions {
   absorption?: number;
   blurRadius?: number;
-  heartIntensity?: number;
-  heartBlurRadius?: number;
-  heartOffsetX?: number;
-  heartOffsetY?: number;
+  heartAbsorption?: number;
   heartEnabled?: boolean;
 }
 
@@ -271,9 +228,12 @@ interface CineVesselThicknessEffectOptions {
  * プロキシは元メッシュのgeometryを共有しつつmatrixWorldだけ毎フレームコピーするため、
  * メインの描画シーン階層(拍動アニメーション等)には一切手を加えない。
  *
- * 心臓は血管と同じ厚み積算の仕組みを再利用しつつ、(1) 血管より広いぼかし半径、
- * (2) uHeartIntensityによる濃さの頭打ちキャップ、の2点で「境界の曖昧な陰影」として
- * 血管とは視覚的に区別できるように調整している。
+ * 心臓は血管と全く同じ厚み積算の仕組み(実在の心臓メッシュを深度ピール)をそのまま
+ * 再利用しており、疑似的なぼかし・位置ずらしの後処理は行わない。心臓・血管・
+ * オブジェクトの吸収係数はいずれも同じBeer-Lambert則の物理量として扱い、最終的な濃淡は
+ * 全ての光学的厚みを加算してから1回だけexp(-合計)を掛けて求める(mainImage参照)。
+ * これにより、心臓の陰影がどれだけ濃くなっても血管自身のコントラストが埋もれることはなく、
+ * カメラ角度を変えれば心臓の実際の形状・向き・厚みに応じて陰影の形も正しく変化する。
  */
 export class CineVesselThicknessEffect extends Effect {
   private readonly vesselAccumBackMaterial: ShaderMaterial;
@@ -304,10 +264,7 @@ export class CineVesselThicknessEffect extends Effect {
   constructor({
     absorption = 10,
     blurRadius = 0.004,
-    heartIntensity = 0.4,
-    heartBlurRadius = 0.02,
-    heartOffsetX = 0,
-    heartOffsetY = 0,
+    heartAbsorption = 1.0,
     heartEnabled = true,
   }: CineVesselThicknessEffectOptions = {}) {
     const uniforms = new Map<string, Uniform>([
@@ -315,9 +272,7 @@ export class CineVesselThicknessEffect extends Effect {
       ["uAbsorption", new Uniform(absorption)],
       ["uBlurRadius", new Uniform(blurRadius)],
       ["uHeartAccum", new Uniform(null)],
-      ["uHeartIntensity", new Uniform(heartIntensity)],
-      ["uHeartBlurRadius", new Uniform(heartBlurRadius)],
-      ["uHeartOffset", new Uniform(new Vector2(heartOffsetX, heartOffsetY))],
+      ["uHeartAbsorption", new Uniform(heartAbsorption)],
       ["uObjectAccum", new Uniform(null)],
     ]);
     super("CineVesselThicknessEffect", THICKNESS_FRAGMENT_SHADER, {
@@ -325,11 +280,13 @@ export class CineVesselThicknessEffect extends Effect {
       uniforms,
     });
 
-    this.vesselAccumBackMaterial = createAccumMaterial(VESSEL_ACCUM_VERTEX_SHADER, VESSEL_ACCUM_FRAGMENT_SHADER, BackSide, {
+    this.vesselAccumBackMaterial = createAccumMaterial(GENERIC_ACCUM_VERTEX_SHADER, GENERIC_ACCUM_FRAGMENT_SHADER, BackSide, {
       uSign: new Uniform(1),
+      uWeight: new Uniform(1),
     });
-    this.vesselAccumFrontMaterial = createAccumMaterial(VESSEL_ACCUM_VERTEX_SHADER, VESSEL_ACCUM_FRAGMENT_SHADER, FrontSide, {
+    this.vesselAccumFrontMaterial = createAccumMaterial(GENERIC_ACCUM_VERTEX_SHADER, GENERIC_ACCUM_FRAGMENT_SHADER, FrontSide, {
       uSign: new Uniform(-1),
+      uWeight: new Uniform(1),
     });
     this.heartAccumBackMaterial = createAccumMaterial(GENERIC_ACCUM_VERTEX_SHADER, GENERIC_ACCUM_FRAGMENT_SHADER, BackSide, {
       uSign: new Uniform(1),
@@ -379,36 +336,12 @@ export class CineVesselThicknessEffect extends Effect {
     this.uniforms.get("uBlurRadius")!.value = value;
   }
 
-  get heartIntensity(): number {
-    return this.uniforms.get("uHeartIntensity")!.value as number;
+  get heartAbsorption(): number {
+    return this.uniforms.get("uHeartAbsorption")!.value as number;
   }
 
-  set heartIntensity(value: number) {
-    this.uniforms.get("uHeartIntensity")!.value = value;
-  }
-
-  get heartBlurRadius(): number {
-    return this.uniforms.get("uHeartBlurRadius")!.value as number;
-  }
-
-  set heartBlurRadius(value: number) {
-    this.uniforms.get("uHeartBlurRadius")!.value = value;
-  }
-
-  get heartOffsetX(): number {
-    return (this.uniforms.get("uHeartOffset")!.value as Vector2).x;
-  }
-
-  set heartOffsetX(value: number) {
-    (this.uniforms.get("uHeartOffset")!.value as Vector2).x = value;
-  }
-
-  get heartOffsetY(): number {
-    return (this.uniforms.get("uHeartOffset")!.value as Vector2).y;
-  }
-
-  set heartOffsetY(value: number) {
-    (this.uniforms.get("uHeartOffset")!.value as Vector2).y = value;
+  set heartAbsorption(value: number) {
+    this.uniforms.get("uHeartAbsorption")!.value = value;
   }
 
   private ensureProxy(id: VesselId, sourceMesh: Mesh): Mesh {

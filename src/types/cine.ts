@@ -31,14 +31,15 @@ export interface CineXrayParams {
   stentAbsorption: number;
   /** 横隔膜/脊椎のダミーシルエットを背景に薄く表示するか(低優先度オプション) */
   showBackgroundAnatomy: boolean;
-  /** 心臓の陰影の濃さの上限キャップ。0〜1(血管ほど暗くならないよう頭打ちにする) */
-  heartShadowIntensity: number;
-  /** 心臓の陰影のぼかし半径(UV単位)。血管のブラーより広めにして輪郭を曖昧にする */
-  heartShadowSpread: number;
-  /** 心臓の陰影の見かけ上の中心位置、水平オフセット(UV単位) */
-  heartShadowOffsetX: number;
-  /** 心臓の陰影の見かけ上の中心位置、垂直オフセット(UV単位) */
-  heartShadowOffsetY: number;
+  /**
+   * 心筋(心臓の陰影)のBeer-Lambert吸収係数。血管・石灰化・ステントと全く同じ物理量
+   * (X線減弱係数)として扱い、最終的な濃淡は「心臓による減弱+血管による減弱+...」を
+   * 単一の指数減衰にまとめて計算する(心臓の陰影を血管の上に重なる不透明な層として
+   * 別合成しない)。実際の造影剤は心筋よりX線吸収が桁違いに高いため、既定値は
+   * vesselAbsorptionより十分小さくしてあり、どんなカメラ角度で心臓の陰影が濃くなっても
+   * 造影された冠動脈のコントラストが埋もれることはない。
+   */
+  heartAbsorption: number;
   /** true で心臓の陰影を非表示にし、冠動脈のみを表示する(見た目の完成度が低い心臓陰影を隠すためのオプション) */
   vesselsOnly: boolean;
 }

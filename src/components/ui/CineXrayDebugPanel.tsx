@@ -20,13 +20,9 @@ const SLIDERS: SliderDef[] = [
   { key: "vesselAbsorption", label: "血管吸収係数", min: 0.5, max: 30, step: 0.5 },
   { key: "calcificationAbsorption", label: "石灰化吸収係数", min: 0.5, max: 60, step: 0.5 },
   { key: "stentAbsorption", label: "ステント吸収係数", min: 0.5, max: 80, step: 0.5 },
-];
-
-const HEART_SHADOW_SLIDERS: SliderDef[] = [
-  { key: "heartShadowIntensity", label: "濃さ", min: 0, max: 1, step: 0.01, decimals: 2 },
-  { key: "heartShadowSpread", label: "広がり", min: 0, max: 0.08, step: 0.001, decimals: 3 },
-  { key: "heartShadowOffsetX", label: "中心位置X", min: -0.2, max: 0.2, step: 0.005, decimals: 3 },
-  { key: "heartShadowOffsetY", label: "中心位置Y", min: -0.2, max: 0.2, step: 0.005, decimals: 3 },
+  // 心筋(心臓の陰影)も血管・石灰化・ステントと同じBeer-Lambert吸収係数として扱う
+  // (別立てのopacityキャップではない)。造影剤(血管)より十分小さい値が既定。
+  { key: "heartAbsorption", label: "心筋吸収係数", min: 0.1, max: 10, step: 0.1, decimals: 1 },
 ];
 
 /**
@@ -68,9 +64,6 @@ export function CineXrayDebugPanel() {
         />
         横隔膜/脊椎のダミーシルエットを表示
       </label>
-
-      <h3 className="cine-xray-debug-subheading">心臓の陰影</h3>
-      {HEART_SHADOW_SLIDERS.map(renderSlider)}
     </div>
   );
 }

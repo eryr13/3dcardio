@@ -21,6 +21,10 @@ const BLUR_RADIUS_SCALE = 0.012;
  */
 export function CineXrayPostProcessing() {
   const params = useCardioStore((s) => s.cine.xrayParams);
+  // 3Dビューで心臓メッシュを非表示にした場合、シネX線モードの心陰影も連動して
+  // 消えるようにする(以前は「冠動脈のみ表示」トグルだけで判定しており、3Dビューの
+  // 心臓表示状態と無関係だった)。
+  const heartMeshVisible = useCardioStore((s) => s.heart.visible);
   const composerRef = useRef<EffectComposerImpl>(null);
 
   useEffect(() => {
@@ -35,11 +39,8 @@ export function CineXrayPostProcessing() {
       <VesselThickness
         absorption={params.vesselAbsorption}
         blurRadius={params.blurAmount * BLUR_RADIUS_SCALE}
-        heartIntensity={params.heartShadowIntensity}
-        heartBlurRadius={params.heartShadowSpread}
-        heartOffsetX={params.heartShadowOffsetX}
-        heartOffsetY={params.heartShadowOffsetY}
-        heartEnabled={!params.vesselsOnly}
+        heartAbsorption={params.heartAbsorption}
+        heartEnabled={heartMeshVisible && !params.vesselsOnly}
       />
       <Noise premultiply blendFunction={BlendFunction.OVERLAY} opacity={params.noiseIntensity} />
       <Vignette offset={0.35} darkness={params.vignetteStrength} />

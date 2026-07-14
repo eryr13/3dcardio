@@ -1,14 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
-import {
-  BackSide,
-  BufferGeometry,
-  Float32BufferAttribute,
-  Mesh,
-  MeshBasicMaterial,
-  MultiplyBlending,
-  NormalBlending,
-} from "three";
+import { BackSide, BufferGeometry, Mesh, MeshBasicMaterial, MultiplyBlending, NormalBlending } from "three";
 import { useCardioStore } from "../../store/useCardioStore";
 import type { VesselId, VesselState } from "../../types/anatomy";
 import type { CalcificationObject, StenosisObject, StentObject } from "../../types/object";
@@ -74,32 +66,6 @@ function createHeartOutlineMaterials() {
     depthTest: true,
   });
   return { depthMask, rim };
-}
-
-/**
- * リアルX線モードの血管厚み積算(CineVesselThicknessEffect)で使う「近位度」を
- * 頂点属性 aProximity として焼き込んだジオメトリを作る。ローカルY座標が高いほど
- * 近位(心基部側)、低いほど遠位(心尖側)という vesselSegments.ts と同じ約束事で
- * 0〜1に正規化する。mesh.geometry は scene.clone(true) 由来でメインビューと参照を
- * 共有しているため、必ず複製してから属性を追加する(メインビューに影響させない)。
- */
-function attachProximityAttribute(geometry: BufferGeometry): BufferGeometry {
-  const cloned = geometry.index ? geometry.toNonIndexed() : geometry.clone();
-  const position = cloned.getAttribute("position");
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (let i = 0; i < position.count; i++) {
-    const y = position.getY(i);
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-  const range = maxY - minY || 1;
-  const proximity = new Float32Array(position.count);
-  for (let i = 0; i < position.count; i++) {
-    proximity[i] = (position.getY(i) - minY) / range;
-  }
-  cloned.setAttribute("aProximity", new Float32BufferAttribute(proximity, 1));
-  return cloned;
 }
 
 function isTrunkVisibleInCine(vessels: Record<string, VesselState>, trunkId: VesselId): boolean {
@@ -171,9 +137,8 @@ export function CineAnatomyModel() {
     return { root, meshesByName, graphs, originalGeometries, outline };
   }, [scene]);
 
-  // Phase 6: 狭窄オブジェクトに基づいてジオメトリを変形し、深度ピール用のaProximity属性を
-  // 焼き直す。built(=scene.clone(true)由来のcine専用複製)のmesh.geometryだけを
-  // 差し替えるため、メインビュー側には一切影響しない。
+  // Phase 6: 狭窄オブジェクトに基づいてジオメトリを変形する。built(=scene.clone(true)由来の
+  // cine専用複製)のmesh.geometryだけを差し替えるため、メインビュー側には一切影響しない。
   useEffect(() => {
     for (const id of VESSEL_IDS) {
       const mesh = built.meshesByName.get(id);
@@ -183,8 +148,7 @@ export function CineAnatomyModel() {
       const stenoses = getObjectsForVessel(objects, id).filter(
         (o): o is StenosisObject => o.type === "stenosis",
       );
-      const deformed = applyStenosisDeformation(originalGeometry, graph, stenoses);
-      mesh.geometry = attachProximityAttribute(deformed);
+      mesh.geometry = applyStenosisDeformation(originalGeometry, graph, stenoses);
     }
   }, [built, objects]);
 
