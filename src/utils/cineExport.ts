@@ -3,7 +3,6 @@ import { zipSync } from "fflate";
 import { useCardioStore } from "../store/useCardioStore";
 import type { CineSceneHandle } from "../components/models/cineSceneBridge";
 import { computeHeartbeatTransform } from "./heartbeatAnimation";
-import { applyCineRealism } from "./cineRealism";
 
 /** 書き出す長さ(秒)。0.5秒周期なら4サイクル分で、ループ用途として十分な長さの定数。 */
 const EXPORT_DURATION_SECONDS = 2;
@@ -34,7 +33,7 @@ async function captureCineFrames(handle: CineSceneHandle, fps: number): Promise<
   const ctx = offscreen.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("2D contextの取得に失敗しました");
 
-  const { realisticMode } = useCardioStore.getState().cine;
+  const { xrayMode } = useCardioStore.getState().cine;
   const frameCount = Math.max(1, Math.round(EXPORT_DURATION_SECONDS * fps));
   const frames: ImageData[] = [];
 
@@ -43,10 +42,21 @@ async function captureCineFrames(handle: CineSceneHandle, fps: number): Promise<
     const transform = computeHeartbeatTransform(t);
     pulseGroup.scale.set(...transform.scale);
     pulseGroup.rotation.y = transform.twistY;
-    gl.render(scene, camera);
+    // リアルX線モード中はEffectComposer経由でレンダリングし、ライブ表示(CineXrayPostProcessing.tsx)
+    // と同じポストプロセス結果を書き出しに反映する。スキーマ表示は従来通り素のgl.render。
+    if (xrayMode && handle.composer) {
+      handle.composer.render(1 / fps);
+      // EffectComposerは血管厚みエフェクトの深度ピール用に描画ターゲットを何度も切り替える。
+      // このため composer.render() 直後に即 drawImage/getImageData を呼ぶと、実機検証で
+      // 空の画像を読んでしまうことを確認した(gl.finish()を挟んでも解消しない — GPUコマンドの
+      // 完了待ちの問題ではなく、ブラウザ側のcanvas提示がアニメーションフレーム境界に紐づいている
+      // ためと推測される)。次のrequestAnimationFrameまで待ってから読み取ることで確実に反映させる。
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    } else {
+      gl.render(scene, camera);
+    }
     ctx.drawImage(canvasEl, 0, 0, width, height);
-    // ライブ表示(CineRealismOverlay.tsx)と同じ後処理を書き出しにもかけ、見た目を一致させる
-    if (realisticMode) applyCineRealism(ctx, width, height);
     frames.push(ctx.getImageData(0, 0, width, height));
     // UIが固まらないよう数フレームごとに1tick譲る
     if (i % 4 === 3) {

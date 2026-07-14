@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useCardioStore } from "../../store/useCardioStore";
 import { CineScene } from "../viewer/CineScene";
-import { CineRealismOverlay } from "../viewer/CineRealismOverlay";
 import { cineSceneBridge } from "../models/cineSceneBridge";
 
 /**
@@ -56,7 +55,6 @@ export function CinePanel() {
       <h2 className="cine-panel-title">シネビュー(X線風投影)</h2>
       <div className="cine-canvas-wrap">
         <CineScene />
-        <CineRealismOverlay />
       </div>
       <p className="panel-note">
         メインビューのカメラ視線方向を投影方向とした簡易X線風シルエットです。実際のDRR(透視像)ではありません。

@@ -226,11 +226,48 @@
   height: 100%;
 }
 
-/* リアルモード用の2Dオーバーレイ。WebGL側は裏で描画を続けたまま、見た目だけ
-   このcanvasで覆う(絶対配置+DOM順で後勝ちなので、明示的な非表示指定は不要)。 */
-.cine-realism-canvas {
-  position: absolute;
-  inset: 0;
+.cine-xray-debug-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #1a222b;
+  border: 1px solid #2f3d4a;
+  border-radius: 6px;
+}
+
+.cine-xray-debug-panel h3 {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  color: #9fb0c0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cine-xray-debug-subheading {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #2f3d4a;
+}
+
+.cine-xray-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 0.82rem;
+}
+
+.cine-xray-slider span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.cine-xray-slider-value {
+  color: #9fb0c0;
+  font-variant-numeric: tabular-nums;
+}
+
+.cine-xray-slider input[type="range"] {
+  width: 100%;
 }
 
 .cine-transport {
@@ -334,4 +371,140 @@
 .carm-preset-grid button {
   font-size: 0.76rem;
   padding: 6px 4px;
+}
+
+.lesion-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.lesion-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+  color: #9fb0c0;
+}
+
+.lesion-form-row select,
+.lesion-form-row input[type="number"] {
+  background: #1f2a35;
+  color: #e6edf3;
+  border: 1px solid #2f3d4a;
+  border-radius: 4px;
+  padding: 5px 6px;
+}
+
+.lesion-segment-hint {
+  margin-top: -4px;
+}
+
+.lesion-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lesion-item {
+  background: #1a222b;
+  border: 1px solid #2f3d4a;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.lesion-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+}
+
+.lesion-type-icon {
+  color: #9fb0c0;
+}
+
+.lesion-item-title {
+  flex: 1 1 auto;
+}
+
+.lesion-visible-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.76rem;
+  color: #9fb0c0;
+  white-space: nowrap;
+}
+
+.lesion-remove-button {
+  width: auto;
+  padding: 3px 8px;
+  font-size: 0.76rem;
+}
+
+.lesion-item-controls {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: #9fb0c0;
+}
+
+.lesion-item-controls label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lesion-item-controls input[type="number"] {
+  width: 52px;
+  padding: 3px 5px;
+  background: #1f2a35;
+  color: #e6edf3;
+  border: 1px solid #2f3d4a;
+  border-radius: 4px;
+}
+
+.lesion-click-hint {
+  color: #4fd7ff;
+  font-weight: 600;
+}
+
+.lesion-fine-tune-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #9fb0c0;
+}
+
+.lesion-fine-tune-row button {
+  width: auto;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+}
+
+.lesion-fine-tune-row .opacity-value {
+  min-width: 3.2em;
+  text-align: center;
+}
+
+.lesion-item-editing {
+  border-color: #4fd7ff;
+  box-shadow: 0 0 0 1px #4fd7ff;
+}
+
+.lesion-position-display {
+  white-space: nowrap;
+}
+
+.lesion-item-controls button {
+  width: auto;
+  padding: 3px 8px;
+  font-size: 0.76rem;
 }

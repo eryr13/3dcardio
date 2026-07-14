@@ -1,6 +1,7 @@
 import { ViewControls } from "./ViewControls";
 import { ClippingControls } from "./ClippingControls";
 import { AnatomyLegend } from "./AnatomyLegend";
+import { LesionPanel } from "./LesionPanel";
 import { CineControls } from "./CineControls";
 import { CArmCalibration } from "./CArmCalibration";
 import { CArmReadout } from "./CArmReadout";
@@ -12,6 +13,7 @@ export function SidePanel() {
       <ViewControls />
       <ClippingControls />
       <AnatomyLegend />
+      <LesionPanel />
       <CineControls />
       <CArmCalibration />
       <CArmReadout />

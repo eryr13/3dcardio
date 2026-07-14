@@ -3,6 +3,7 @@ import { useCardioStore } from "../../store/useCardioStore";
 import type { CineFps } from "../../types/cine";
 import { cineSceneBridge } from "../models/cineSceneBridge";
 import { exportCineGif, exportCinePngZip } from "../../utils/cineExport";
+import { CineXrayDebugPanel } from "./CineXrayDebugPanel";
 
 const FPS_OPTIONS: CineFps[] = [15, 30];
 
@@ -17,7 +18,8 @@ export function CineControls() {
   const pauseCine = useCardioStore((s) => s.pauseCine);
   const setCineFps = useCardioStore((s) => s.setCineFps);
   const setCineShowHeartOutline = useCardioStore((s) => s.setCineShowHeartOutline);
-  const setCineRealisticMode = useCardioStore((s) => s.setCineRealisticMode);
+  const setCineXrayMode = useCardioStore((s) => s.setCineXrayMode);
+  const setCineXrayParam = useCardioStore((s) => s.setCineXrayParam);
   const [exportError, setExportError] = useState<string | null>(null);
 
   async function handleExport(kind: "gif" | "png") {
@@ -72,17 +74,29 @@ export function CineControls() {
       <label className="segment-mode-toggle">
         <input
           type="checkbox"
-          checked={cine.realisticMode}
+          checked={cine.xrayMode}
           disabled={!cine.enabled}
-          onChange={(e) => setCineRealisticMode(e.target.checked)}
+          onChange={(e) => setCineXrayMode(e.target.checked)}
         />
-        リアルなアンギオ風表示に切り替え
+        リアルX線表示に切り替え
       </label>
-      {cine.realisticMode && (
-        <p className="panel-note">
-          コントラスト強調・ビネット(周辺減光)・フィルムグレインを後処理で加えた表示です。
-          オフにするといつものシンプルなシルエット表示に戻ります。
-        </p>
+      {cine.xrayMode && (
+        <>
+          <p className="panel-note">
+            透視投影(点X線源からの円錐投影)+血管の厚み積算+ノイズ/ブラー/ビネットの
+            ポストプロセスを加えたリアルX線風表示です。オフにするといつものシンプルな
+            スキーマ表示(平行投影シルエット)に戻ります。
+          </p>
+          <label className="segment-mode-toggle">
+            <input
+              type="checkbox"
+              checked={cine.xrayParams.vesselsOnly}
+              onChange={(e) => setCineXrayParam("vesselsOnly", e.target.checked)}
+            />
+            冠動脈のみ表示(心臓の陰影を隠す)
+          </label>
+          <CineXrayDebugPanel />
+        </>
       )}
 
       <div className="cine-export-buttons">

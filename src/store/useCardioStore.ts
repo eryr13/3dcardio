@@ -5,11 +5,13 @@ import type {
   ClippingAxis,
   ClippingState,
   HeartState,
+  VesselId,
   VesselState,
 } from "../types/anatomy";
-import type { CineFps, CineState } from "../types/cine";
+import type { CineFps, CineState, CineXrayParams } from "../types/cine";
 import type { PatientFrameCalibration } from "../types/cArmCalibration";
 import { DEFAULT_CALIBRATION } from "../types/cArmCalibration";
+import type { Lesion, LesionPatch, NewLesionInput } from "../types/lesion";
 import { buildSegmentVesselStates } from "../components/models/vesselSegments";
 
 /**
@@ -69,9 +71,36 @@ interface CardioStore {
   pauseCine: () => void;
   setCineFps: (fps: CineFps) => void;
   setCineShowHeartOutline: (show: boolean) => void;
-  setCineRealisticMode: (v: boolean) => void;
+  setCineXrayMode: (v: boolean) => void;
+  setCineXrayParam: <K extends keyof CineXrayParams>(key: K, value: CineXrayParams[K]) => void;
   setCineExporting: (exporting: boolean) => void;
   setCinePanelWidth: (width: number) => void;
+
+  /** Phase 6: 血管上に疑似配置した病変(狭窄・石灰化・ステント)の一覧 */
+  lesions: Lesion[];
+  addLesion: (lesion: NewLesionInput) => void;
+  updateLesion: (id: string, patch: LesionPatch) => void;
+  removeLesion: (id: string) => void;
+  /**
+   * 3Dビュー上で血管をクリックした際、病変追加フォームへ事前入力する一時的な
+   * 位置。フォーム側で消費(addLesion実行、またはキャンセル)したら null に戻す。
+   */
+  pendingLesionPosition: { vesselId: VesselId; position: number } | null;
+  setPendingLesionPosition: (v: { vesselId: VesselId; position: number } | null) => void;
+  /**
+   * 病変追加フォームで位置・長さを微調整している間、3Dビューにライブプレビュー
+   * (簡易円筒)を表示するための一時状態。まだstore.lesionsには登録されていない
+   * (=addLesion実行前の)下書き状態を表す。
+   */
+  previewLesion: { vesselId: VesselId; position: number; length: number } | null;
+  setPreviewLesion: (v: { vesselId: VesselId; position: number; length: number } | null) => void;
+  /**
+   * 登録済み病変の位置を「3Dビューをクリックし直して変更」するモード。
+   * nullでない間は、ModelLoader側のクリックハンドラがpendingLesionPositionの
+   * 代わりにこのIDの病変を直接updateLesionで更新する。
+   */
+  editingLesionId: string | null;
+  setEditingLesionId: (id: string | null) => void;
 }
 
 export interface CameraAngleRequest {
@@ -123,6 +152,20 @@ function computeInitialCamera(): CameraState {
 
 const initialCamera: CameraState = computeInitialCamera();
 
+export const DEFAULT_CINE_XRAY_PARAMS: CineXrayParams = {
+  noiseIntensity: 0.15,
+  blurAmount: 0.3,
+  vignetteStrength: 0.5,
+  contrast: 0.65,
+  vesselAbsorption: 15,
+  showBackgroundAnatomy: false,
+  heartShadowIntensity: 0.4,
+  heartShadowSpread: 0.02,
+  heartShadowOffsetX: 0,
+  heartShadowOffsetY: 0,
+  vesselsOnly: false,
+};
+
 /** 既定では拍動なし(静止)で、再生ボタンを押した時だけ動き始める */
 const initialCine: CineState = {
   enabled: false,
@@ -132,7 +175,8 @@ const initialCine: CineState = {
   accumulatedSeconds: 0,
   fps: 30,
   showHeartOutline: false,
-  realisticMode: false,
+  xrayMode: false,
+  xrayParams: DEFAULT_CINE_XRAY_PARAMS,
   exporting: false,
 };
 
@@ -227,8 +271,13 @@ export const useCardioStore = create<CardioStore>((set) => ({
   setCineShowHeartOutline: (showHeartOutline) =>
     set((state) => ({ cine: { ...state.cine, showHeartOutline } })),
 
-  setCineRealisticMode: (realisticMode) =>
-    set((state) => ({ cine: { ...state.cine, realisticMode } })),
+  setCineXrayMode: (xrayMode) =>
+    set((state) => ({ cine: { ...state.cine, xrayMode } })),
+
+  setCineXrayParam: (key, value) =>
+    set((state) => ({
+      cine: { ...state.cine, xrayParams: { ...state.cine.xrayParams, [key]: value } },
+    })),
 
   setCineExporting: (exporting) => set((state) => ({ cine: { ...state.cine, exporting } })),
 
@@ -239,7 +288,38 @@ export const useCardioStore = create<CardioStore>((set) => ({
         panelWidth: Math.min(CINE_PANEL_MAX_WIDTH, Math.max(CINE_PANEL_MIN_WIDTH, width)),
       },
     })),
+
+  lesions: [],
+
+  addLesion: (lesion) =>
+    set((state) => ({
+      lesions: [...state.lesions, { ...lesion, id: createLesionId() } as Lesion],
+    })),
+
+  updateLesion: (id, patch) =>
+    set((state) => ({
+      lesions: state.lesions.map((lesion) => (lesion.id === id ? ({ ...lesion, ...patch } as Lesion) : lesion)),
+    })),
+
+  removeLesion: (id) =>
+    set((state) => ({
+      lesions: state.lesions.filter((lesion) => lesion.id !== id),
+    })),
+
+  pendingLesionPosition: null,
+
+  setPendingLesionPosition: (v) => set({ pendingLesionPosition: v }),
+
+  previewLesion: null,
+  setPreviewLesion: (v) => set({ previewLesion: v }),
+
+  editingLesionId: null,
+  setEditingLesionId: (id) => set({ editingLesionId: id }),
 }));
+
+function createLesionId(): string {
+  return `lesion-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+}
 
 /** playing 中なら現在時刻までの経過分を accumulatedSeconds に畳み込んで停止する */
 function pauseCineState(cine: CineState): CineState {
