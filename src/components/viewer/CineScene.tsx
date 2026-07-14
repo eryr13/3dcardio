@@ -5,6 +5,7 @@ import { useCardioStore } from "../../store/useCardioStore";
 import { CineAnatomyModel } from "../models/CineAnatomyModel";
 import { cineSceneBridge } from "../models/cineSceneBridge";
 import { useModelBoundingSphereRadius } from "./cineCameraUtils";
+import { applyCineZoomViewOffset } from "../../utils/cineZoom";
 import { CineXrayCamera } from "./CineXrayCamera";
 import { CineXrayPostProcessing } from "./CineXrayPostProcessing";
 import { CineBackgroundAnatomy } from "./CineBackgroundAnatomy";
@@ -54,9 +55,10 @@ function CineOrthoCamera() {
     camera.right = size * aspect;
     camera.top = size;
     camera.bottom = -size;
+    const { camera: mainCamera, cine } = useCardioStore.getState();
+    applyCineZoomViewOffset(camera, state.size.width, state.size.height, cine.zoom);
     camera.updateProjectionMatrix();
 
-    const { camera: mainCamera } = useCardioStore.getState();
     camera.quaternion.set(
       mainCamera.quaternion[0],
       mainCamera.quaternion[1],
@@ -109,6 +111,7 @@ export function CineScene() {
           vesselVisible: {},
           heartMesh: null,
           objectProxies: [],
+          stenosisPlaqueProxies: [],
         };
       }}
     >

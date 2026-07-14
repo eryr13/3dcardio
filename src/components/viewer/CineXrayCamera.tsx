@@ -4,6 +4,7 @@ import { PerspectiveCamera, Vector3 } from "three";
 import { useCardioStore } from "../../store/useCardioStore";
 import { cineSceneBridge } from "../models/cineSceneBridge";
 import { useModelBoundingSphereRadius } from "./cineCameraUtils";
+import { applyCineZoomViewOffset } from "../../utils/cineZoom";
 
 /** 実際のCアーム(点X線源からの円錐投影)を模した画角。40〜50度の中間値で固定する */
 const XRAY_FOV_DEGREES = 45;
@@ -39,9 +40,10 @@ export function CineXrayCamera() {
     camera.aspect = aspect;
     camera.near = Math.max(0.01, distance - radius * 3);
     camera.far = distance + radius * 3;
+    const { camera: mainCamera, cine } = useCardioStore.getState();
+    applyCineZoomViewOffset(camera, state.size.width, state.size.height, cine.zoom);
     camera.updateProjectionMatrix();
 
-    const { camera: mainCamera } = useCardioStore.getState();
     camera.quaternion.set(
       mainCamera.quaternion[0],
       mainCamera.quaternion[1],

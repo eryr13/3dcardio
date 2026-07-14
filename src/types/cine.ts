@@ -1,6 +1,8 @@
 // シネビュー(X線風平行投影 + 拍動ループ再生)に関する状態の型定義。
 // anatomy.ts とは関心が別(表示スタイルではなく再生・書き出し制御)なので分離している。
 
+import type { CineZoomState } from "../utils/cineZoom";
+
 export type CineFps = 15 | 30;
 
 /**
@@ -66,4 +68,10 @@ export interface CineState {
   xrayParams: CineXrayParams;
   /** GIF/PNG書き出し中フラグ。true の間はライブの拍動更新を止め、書き出しループがscaleを直接制御する */
   exporting: boolean;
+  /**
+   * シネビュー独自のズーム・パン状態(メインビューのカメラ操作とは完全に独立)。
+   * スキーマ表示(OrthographicCamera)・リアルX線モード(PerspectiveCamera)の
+   * どちらでも同じ値を view offset として適用する。詳細は utils/cineZoom.ts 参照。
+   */
+  zoom: CineZoomState;
 }

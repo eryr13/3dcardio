@@ -9,6 +9,7 @@ import type {
   VesselState,
 } from "../types/anatomy";
 import type { CineFps, CineState, CineXrayParams } from "../types/cine";
+import { DEFAULT_CINE_ZOOM, dragPan, zoomAtCursor } from "../utils/cineZoom";
 import type { PatientFrameCalibration } from "../types/cArmCalibration";
 import { DEFAULT_CALIBRATION } from "../types/cArmCalibration";
 import type { CardioObject, ObjectPatch, NewObjectInput } from "../types/object";
@@ -77,6 +78,11 @@ interface CardioStore {
   setCineXrayParam: <K extends keyof CineXrayParams>(key: K, value: CineXrayParams[K]) => void;
   setCineExporting: (exporting: boolean) => void;
   setCinePanelWidth: (width: number) => void;
+  /** カーソル位置(ビューポート内の正規化座標、0〜1)を中心にズームする */
+  zoomCineAtCursor: (cursorXNorm: number, cursorYNorm: number, zoomFactor: number) => void;
+  /** ドラッグによるパン(dxNorm/dyNormはビューポート幅・高さに対する移動量の比率) */
+  panCine: (dxNorm: number, dyNorm: number) => void;
+  resetCineZoom: () => void;
 
   /** Phase 6: 血管上に疑似配置したオブジェクト(狭窄・石灰化・ステント等)の一覧 */
   objects: CardioObject[];
@@ -198,6 +204,7 @@ const initialCine: CineState = {
   xrayMode: false,
   xrayParams: DEFAULT_CINE_XRAY_PARAMS,
   exporting: false,
+  zoom: DEFAULT_CINE_ZOOM,
 };
 
 export const useCardioStore = create<CardioStore>((set) => ({
@@ -308,6 +315,18 @@ export const useCardioStore = create<CardioStore>((set) => ({
         panelWidth: Math.min(CINE_PANEL_MAX_WIDTH, Math.max(CINE_PANEL_MIN_WIDTH, width)),
       },
     })),
+
+  zoomCineAtCursor: (cursorXNorm, cursorYNorm, zoomFactor) =>
+    set((state) => ({
+      cine: { ...state.cine, zoom: zoomAtCursor(state.cine.zoom, cursorXNorm, cursorYNorm, zoomFactor) },
+    })),
+
+  panCine: (dxNorm, dyNorm) =>
+    set((state) => ({
+      cine: { ...state.cine, zoom: dragPan(state.cine.zoom, dxNorm, dyNorm) },
+    })),
+
+  resetCineZoom: () => set((state) => ({ cine: { ...state.cine, zoom: DEFAULT_CINE_ZOOM } })),
 
   objects: [],
 
