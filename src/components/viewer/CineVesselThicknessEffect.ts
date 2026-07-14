@@ -23,26 +23,29 @@ const VESSEL_IDS: VesselId[] = ["RCA", "LAD", "LCX"];
 /**
  * 深度ピール用レンダーターゲットの解像度。NDC空間(-1〜1)をそのままサンプリングするため
  * 本編Canvasの実ピクセルサイズとは無関係に固定できる(アスペクト比の不一致は起きない)。
+ * ステントのストラットは血管半径に対して非常に細いため、512では(特にシネビューを
+ * ズームした際に)バイリニアフィルタで信号が薄まり、鋭い線ではなく淡くぼやけた
+ * 網目に見えてしまっていた(実機検証で確認)。1024に上げて細い構造の再現性を上げる。
  */
-const PEEL_RESOLUTION = 512;
+const PEEL_RESOLUTION = 1024;
 
 /**
  * このシェーダーが同時にバインドするsampler2Dユニフォームの総数
- * (入力バッファ1 + 血管アキュムレータ1 + 心臓アキュムレータ1 + オブジェクトアキュムレータ1)。
- * WebGL2はフラグメントシェーダーにつき最低16テクスチャイメージユニットを保証するのみで、
- * これを超えるとGPU/ドライバによってはシェーダープログラムのリンクに失敗し、画面が
- * 真っ黒になる(=何もレンダーされない)可能性がある。
+ * (入力バッファ1 + 血管アキュムレータ1 + 心臓アキュムレータ1 + ステントアキュムレータ1 +
+ * 石灰化アキュムレータ1)。WebGL2はフラグメントシェーダーにつき最低16テクスチャ
+ * イメージユニットを保証するのみで、これを超えるとGPU/ドライバによってはシェーダー
+ * プログラムのリンクに失敗し、画面が真っ黒になる(=何もレンダーされない)可能性がある。
  *
  * 以前は血管3本・心臓・オブジェクト6スロットそれぞれに専用のfront/backテクスチャを
  * 個別に持たせており(計21ユニット)、実機で「MAX_TEXTURE_IMAGE_UNITS(16)を超過して
  * シェーダーのリンクに失敗し画面が真っ黒になる」不具合が実際に発生することを確認した。
- * このため、同じグループ(血管・心臓・オブジェクト)内の全オブジェクトを「1枚の共有
+ * このため、同じグループ(血管・心臓・ステント・石灰化)内の全オブジェクトを「1枚の共有
  * レンダーターゲットに加算合成(additive blending)で描き込む」アキュムレータ方式に
- * 変更し、グループ内のオブジェクト数に関係なくテクスチャ数を固定(グループ数と同じ3枚)に
+ * 変更し、グループ内のオブジェクト数に関係なくテクスチャ数を固定(グループ数と同じ4枚)に
  * した。将来オブジェクトスロットを増やしてもこの数は変わらないため、同種の不具合が
  * 再発することは構造的に無い。
  */
-const REQUIRED_TEXTURE_UNITS = 1 + 3;
+const REQUIRED_TEXTURE_UNITS = 1 + 4;
 
 /**
  * アキュムレータへの加算/減算を担う頂点/フラグメントシェーダー。血管・心臓・
@@ -73,13 +76,20 @@ void main() {
  * 吸収係数が異なるオブジェクトが同じ共有アキュムレータに混在しても、加算する前に
  * 各オブジェクト自身の吸収係数を掛けておくことで、最終的な合計値がそのまま
  * Beer-Lambert則の吸光度(optical depth)の合計になる。
+ *
+ * ステントのように吸収係数を非常に大きくすると、viewZ×uWeightがHalfFloat
+ * レンダーターゲット(有効範囲は概ね±65504)の表現範囲を超え、加算ブレンドの
+ * 蓄積次第で±Infinityになりうる(実機検証で確認: 吸収係数を上げるとシネビュー
+ * 全体が真っ黒になる不具合があった)。exp(-30)は既に無視できるほど0に近いため、
+ * 書き込み時点でこの範囲に収めても見た目には一切影響しない。
  */
 const GENERIC_ACCUM_FRAGMENT_SHADER = /* glsl */ `
 uniform float uSign;
 uniform float uWeight;
 varying float vViewZ;
 void main() {
-  gl_FragColor = vec4(uSign * vViewZ * uWeight, 0.0, 0.0, 0.0);
+  float value = clamp(uSign * vViewZ * uWeight, -5000.0, 5000.0);
+  gl_FragColor = vec4(value, 0.0, 0.0, 0.0);
 }
 `;
 
@@ -91,20 +101,25 @@ uniform float uBlurRadius;
 uniform sampler2D uHeartAccum;
 uniform float uHeartAbsorption;
 
-uniform sampler2D uObjectAccum;
+uniform sampler2D uStentAccum;
 
-// 血管の輪郭をわずかに「にじませる」ための軽量なぼかし(周囲8方向+中心の加重平均)。
-// TiltShift2等の画面全体のブラー効果ではなく、血管の太さ情報そのものに対して
-// 掛けることで、細い線が全体ブラーで消えてしまう問題を避けている。
-float blurredThickness(vec2 uv) {
-  if (uBlurRadius < 0.0001) return max(0.0, texture2D(uVesselAccum, uv).r);
-  float sum = max(0.0, texture2D(uVesselAccum, uv).r) * 3.0;
+uniform sampler2D uCalcificationAccum;
+
+// 軽量なぼかし(周囲8方向+中心の加重平均)。TiltShift2等の画面全体のブラー効果では
+// なく、特定のアキュムレータの厚み情報そのものに対して掛けることで、細い構造が
+// 全体ブラーで消えてしまう問題を避けている。血管の輪郭のにじみと、石灰化の
+// 不整形な塊の縁を滑らかにする(ジオメトリの分割数由来のポリゴンエッジを目立たなく
+// する)のに使う。ステントの網目(ストラット)は金属特有の鋭さを保つため、この関数を
+// 一切通さず生の値を使う(mainImage参照)。
+float blurredSample(sampler2D tex, vec2 uv, float blurRadius) {
+  if (blurRadius < 0.0001) return max(0.0, texture2D(tex, uv).r);
+  float sum = max(0.0, texture2D(tex, uv).r) * 3.0;
   float weight = 3.0;
   const int SAMPLES = 8;
   for (int i = 0; i < SAMPLES; i++) {
     float angle = 6.28318530718 * (float(i) / float(SAMPLES));
-    vec2 offset = vec2(cos(angle), sin(angle)) * uBlurRadius;
-    sum += max(0.0, texture2D(uVesselAccum, uv + offset).r);
+    vec2 offset = vec2(cos(angle), sin(angle)) * blurRadius;
+    sum += max(0.0, texture2D(tex, uv + offset).r);
     weight += 1.0;
   }
   return sum / weight;
@@ -118,8 +133,8 @@ float lungBrighten(vec2 uv) {
   return mix(1.0, 1.35, t);
 }
 
-// 心臓・血管・オブジェクト(石灰化/ステント)のいずれも「同じ物理量(X線減弱係数)」として
-// 扱い、それぞれの光学的厚み(厚み×吸収係数)を単純加算してから最後に1回だけ
+// 心臓・血管・石灰化・ステントのいずれも「同じ物理量(X線減弱係数)」として扱い、
+// それぞれの光学的厚み(厚み×吸収係数)を単純加算してから最後に1回だけ
 // exp(-合計)を掛けるBeer-Lambert則そのものの合成にする。心臓の厚みは実際の心臓
 // メッシュを血管と全く同じ深度ピールで積算した生の値をそのまま使う(疑似的な
 // ぼかし・位置ずらしの後処理は行わない。以前あった「広がり」「中心位置」パラメータは
@@ -135,14 +150,18 @@ float lungBrighten(vec2 uv) {
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
   vec3 toned = inputColor.rgb * lungBrighten(uv);
 
-  float vesselOpticalDepth = blurredThickness(uv) * uAbsorption;
+  float vesselOpticalDepth = blurredSample(uVesselAccum, uv, uBlurRadius) * uAbsorption;
   float heartOpticalDepth = max(0.0, texture2D(uHeartAccum, uv).r) * uHeartAbsorption;
-  // オブジェクトアキュムレータは各オブジェクト自身の吸収係数を既に加算前に掛けてあるため、
-  // ここではそのまま光学的厚みとして合計に加える(ブラーは掛けない=石灰化のくっきりした
-  // 高吸収感、ステントの細線らしさを保つ)。
-  float objectOpticalDepth = max(0.0, texture2D(uObjectAccum, uv).r);
+  // ステントは吸収係数を既に加算前に掛けてあるため、そのまま光学的厚みとして扱う。
+  // ブラーは一切掛けない(=金属の網目らしい、細く鋭いストラットの線を保つ)。
+  float stentOpticalDepth = max(0.0, texture2D(uStentAccum, uv).r);
+  // 石灰化も吸収係数を既に加算前に掛けてあるが、こちらは血管と同じ軽いブラーを
+  // 通す(=不整形な塊のポリゴンエッジをなめらかにし、血管に重なる自然な濃い陰影に見せる)。
+  float calcificationOpticalDepth = blurredSample(uCalcificationAccum, uv, uBlurRadius);
 
-  float totalOpticalDepth = vesselOpticalDepth + heartOpticalDepth + objectOpticalDepth;
+  // exp(-30)は既に無視できるほど0に近いため、上限でクランプしても見た目には
+  // 影響しない(Infinity/NaNが万一紛れ込んでも画面全体が壊れないための安全策)。
+  float totalOpticalDepth = min(vesselOpticalDepth + heartOpticalDepth + stentOpticalDepth + calcificationOpticalDepth, 30.0);
   vec3 color = toned * exp(-totalOpticalDepth);
   outputColor = vec4(color, inputColor.a);
 }
@@ -240,8 +259,8 @@ export class CineVesselThicknessEffect extends Effect {
   private readonly vesselAccumFrontMaterial: ShaderMaterial;
   private readonly heartAccumBackMaterial: ShaderMaterial;
   private readonly heartAccumFrontMaterial: ShaderMaterial;
-  private readonly objectAccumBackMaterial: ShaderMaterial;
-  private readonly objectAccumFrontMaterial: ShaderMaterial;
+  private readonly stentAccumBackMaterial: ShaderMaterial;
+  private readonly stentAccumFrontMaterial: ShaderMaterial;
   private readonly peelScene: Scene;
   private readonly proxies: Partial<Record<VesselId, Mesh>> = {};
   private readonly proxySourceGeometry: Partial<Record<VesselId, unknown>> = {};
@@ -249,9 +268,14 @@ export class CineVesselThicknessEffect extends Effect {
   private heartProxy: Mesh | null = null;
   private heartProxySourceGeometry: unknown = null;
   private readonly heartAccumTarget: WebGLRenderTarget;
-  private readonly objectProxies: (Mesh | null)[] = [];
-  private readonly objectProxySourceGeometry: (unknown | null)[] = [];
-  private readonly objectAccumTarget: WebGLRenderTarget;
+  private readonly stentProxies: (Mesh | null)[] = [];
+  private readonly stentProxySourceGeometry: (unknown | null)[] = [];
+  private readonly stentAccumTarget: WebGLRenderTarget;
+  private readonly calcificationAccumBackMaterial: ShaderMaterial;
+  private readonly calcificationAccumFrontMaterial: ShaderMaterial;
+  private readonly calcificationProxies: (Mesh | null)[] = [];
+  private readonly calcificationProxySourceGeometry: (unknown | null)[] = [];
+  private readonly calcificationAccumTarget: WebGLRenderTarget;
   /**
    * 内腔を狭める要素(狭窄プラークの外径/内径チューブ、石灰化の内腔減算用シェル)の
    * プロキシ。血管本体と全く同じvesselAccumBackMaterial/vesselAccumFrontMaterialを
@@ -283,7 +307,8 @@ export class CineVesselThicknessEffect extends Effect {
       ["uBlurRadius", new Uniform(blurRadius)],
       ["uHeartAccum", new Uniform(null)],
       ["uHeartAbsorption", new Uniform(heartAbsorption)],
-      ["uObjectAccum", new Uniform(null)],
+      ["uStentAccum", new Uniform(null)],
+      ["uCalcificationAccum", new Uniform(null)],
     ]);
     super("CineVesselThicknessEffect", THICKNESS_FRAGMENT_SHADER, {
       blendFunction: BlendFunction.SET,
@@ -306,18 +331,27 @@ export class CineVesselThicknessEffect extends Effect {
       uSign: new Uniform(-1),
       uWeight: new Uniform(1),
     });
-    this.objectAccumBackMaterial = createAccumMaterial(GENERIC_ACCUM_VERTEX_SHADER, GENERIC_ACCUM_FRAGMENT_SHADER, BackSide, {
+    this.stentAccumBackMaterial = createAccumMaterial(GENERIC_ACCUM_VERTEX_SHADER, GENERIC_ACCUM_FRAGMENT_SHADER, BackSide, {
       uSign: new Uniform(1),
       uWeight: new Uniform(1),
     });
-    this.objectAccumFrontMaterial = createAccumMaterial(GENERIC_ACCUM_VERTEX_SHADER, GENERIC_ACCUM_FRAGMENT_SHADER, FrontSide, {
+    this.stentAccumFrontMaterial = createAccumMaterial(GENERIC_ACCUM_VERTEX_SHADER, GENERIC_ACCUM_FRAGMENT_SHADER, FrontSide, {
+      uSign: new Uniform(-1),
+      uWeight: new Uniform(1),
+    });
+    this.calcificationAccumBackMaterial = createAccumMaterial(GENERIC_ACCUM_VERTEX_SHADER, GENERIC_ACCUM_FRAGMENT_SHADER, BackSide, {
+      uSign: new Uniform(1),
+      uWeight: new Uniform(1),
+    });
+    this.calcificationAccumFrontMaterial = createAccumMaterial(GENERIC_ACCUM_VERTEX_SHADER, GENERIC_ACCUM_FRAGMENT_SHADER, FrontSide, {
       uSign: new Uniform(-1),
       uWeight: new Uniform(1),
     });
     this.peelScene = new Scene();
     this.vesselAccumTarget = createPeelTarget();
     this.heartAccumTarget = createPeelTarget();
-    this.objectAccumTarget = createPeelTarget();
+    this.stentAccumTarget = createPeelTarget();
+    this.calcificationAccumTarget = createPeelTarget();
     this.heartEnabled = heartEnabled;
   }
 
@@ -391,19 +425,39 @@ export class CineVesselThicknessEffect extends Effect {
    * 応じて毎フレーム件数が変わり得るため、必要な数だけ動的に生成・破棄する
    * (固定スロット数を持たない=物体数が増えてもテクスチャ数は増えない設計)。
    */
-  private ensureObjectProxy(index: number, sourceMesh: Mesh): Mesh {
-    const existing = this.objectProxies[index];
-    if (existing && this.objectProxySourceGeometry[index] === sourceMesh.geometry) {
+  private ensureStentProxy(index: number, sourceMesh: Mesh): Mesh {
+    const existing = this.stentProxies[index];
+    if (existing && this.stentProxySourceGeometry[index] === sourceMesh.geometry) {
       return existing;
     }
     if (existing) this.peelScene.remove(existing);
-    const proxy = new Mesh(sourceMesh.geometry, this.objectAccumBackMaterial);
+    const proxy = new Mesh(sourceMesh.geometry, this.stentAccumBackMaterial);
     proxy.frustumCulled = false;
     proxy.matrixAutoUpdate = false;
     proxy.matrixWorldAutoUpdate = false;
     this.peelScene.add(proxy);
-    this.objectProxies[index] = proxy;
-    this.objectProxySourceGeometry[index] = sourceMesh.geometry;
+    this.stentProxies[index] = proxy;
+    this.stentProxySourceGeometry[index] = sourceMesh.geometry;
+    return proxy;
+  }
+
+  /**
+   * 石灰化オブジェクトのプロキシ。ステントと同じパターンだが、専用のアキュムレータ
+   * (mainImage側で軽くブラーがかかる)に積算するため別のマテリアル/配列を使う。
+   */
+  private ensureCalcificationProxy(index: number, sourceMesh: Mesh): Mesh {
+    const existing = this.calcificationProxies[index];
+    if (existing && this.calcificationProxySourceGeometry[index] === sourceMesh.geometry) {
+      return existing;
+    }
+    if (existing) this.peelScene.remove(existing);
+    const proxy = new Mesh(sourceMesh.geometry, this.calcificationAccumBackMaterial);
+    proxy.frustumCulled = false;
+    proxy.matrixAutoUpdate = false;
+    proxy.matrixWorldAutoUpdate = false;
+    this.peelScene.add(proxy);
+    this.calcificationProxies[index] = proxy;
+    this.calcificationProxySourceGeometry[index] = sourceMesh.geometry;
     return proxy;
   }
 
@@ -441,7 +495,10 @@ export class CineVesselThicknessEffect extends Effect {
       if (proxy) proxy.visible = proxy === active;
     }
     if (this.heartProxy) this.heartProxy.visible = this.heartProxy === active;
-    for (const proxy of this.objectProxies) {
+    for (const proxy of this.stentProxies) {
+      if (proxy) proxy.visible = proxy === active;
+    }
+    for (const proxy of this.calcificationProxies) {
       if (proxy) proxy.visible = proxy === active;
     }
     for (const proxy of this.lumenSubtractionProxies) {
@@ -559,41 +616,76 @@ export class CineVesselThicknessEffect extends Effect {
       this.uniforms.get("uHeartAccum")!.value = null;
     }
 
-    // 石灰化・ステントオブジェクト: 件数に関わらず1枚の共有ターゲットに加算合成する。
-    // オブジェクトごとに吸収係数が異なるため、加算する前に自身の吸収係数を掛けてから
-    // 加算する(uWeight)ことで、合計値がそのままBeer-Lambert則の吸光度になる。
-    renderer.setRenderTarget(this.objectAccumTarget);
+    // ステント: 件数に関わらず1枚の共有ターゲットに加算合成する。オブジェクトごとに
+    // 吸収係数が異なるため、加算する前に自身の吸収係数を掛けてから加算する(uWeight)
+    // ことで、合計値がそのままBeer-Lambert則の吸光度になる。石灰化とは別チャンネル
+    // (mainImageでブラーを掛けない)にすることで、金属の網目らしい鋭さを保つ。
+    renderer.setRenderTarget(this.stentAccumTarget);
     renderer.setClearColor(0x000000, 0);
     renderer.clear(true, true, true);
 
-    let anyObjectVisible = false;
-    handle.objectProxies.forEach((entry, index) => {
+    let anyStentVisible = false;
+    handle.stentProxies.forEach((entry, index) => {
       if (!entry) return;
-      anyObjectVisible = true;
+      anyStentVisible = true;
 
-      const proxy = this.ensureObjectProxy(index, entry.mesh);
+      const proxy = this.ensureStentProxy(index, entry.mesh);
       proxy.matrixWorld.copy(entry.mesh.matrixWorld);
       this.activateOnlyProxy(proxy);
 
-      renderer.setRenderTarget(this.objectAccumTarget);
-      (this.objectAccumBackMaterial.uniforms.uWeight as Uniform).value = entry.absorption;
-      (this.objectAccumFrontMaterial.uniforms.uWeight as Uniform).value = entry.absorption;
-      proxy.material = this.objectAccumBackMaterial;
+      renderer.setRenderTarget(this.stentAccumTarget);
+      (this.stentAccumBackMaterial.uniforms.uWeight as Uniform).value = entry.absorption;
+      (this.stentAccumFrontMaterial.uniforms.uWeight as Uniform).value = entry.absorption;
+      proxy.material = this.stentAccumBackMaterial;
       renderer.render(this.peelScene, camera);
-      proxy.material = this.objectAccumFrontMaterial;
+      proxy.material = this.stentAccumFrontMaterial;
       renderer.render(this.peelScene, camera);
     });
     // 今回のフレームで使われなかった過去のプロキシは残しておくとpeelSceneに古い
     // ジオメトリが居座り続けてしまうため、件数が減った分は破棄する。
-    for (let i = handle.objectProxies.length; i < this.objectProxies.length; i++) {
-      const stale = this.objectProxies[i];
+    for (let i = handle.stentProxies.length; i < this.stentProxies.length; i++) {
+      const stale = this.stentProxies[i];
       if (stale) {
         this.peelScene.remove(stale);
-        this.objectProxies[i] = null;
-        this.objectProxySourceGeometry[i] = null;
+        this.stentProxies[i] = null;
+        this.stentProxySourceGeometry[i] = null;
       }
     }
-    this.uniforms.get("uObjectAccum")!.value = anyObjectVisible ? this.objectAccumTarget.texture : null;
+    this.uniforms.get("uStentAccum")!.value = anyStentVisible ? this.stentAccumTarget.texture : null;
+
+    // 石灰化: ステントと同じ「件数に関わらず1枚の共有ターゲットに加算合成」だが、
+    // mainImage側で軽くブラーを掛ける専用チャンネルに積算する(不整形な塊の
+    // ポリゴンエッジをなめらかにするため)。
+    renderer.setRenderTarget(this.calcificationAccumTarget);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear(true, true, true);
+
+    let anyCalcificationVisible = false;
+    handle.calcificationProxies.forEach((entry, index) => {
+      if (!entry) return;
+      anyCalcificationVisible = true;
+
+      const proxy = this.ensureCalcificationProxy(index, entry.mesh);
+      proxy.matrixWorld.copy(entry.mesh.matrixWorld);
+      this.activateOnlyProxy(proxy);
+
+      renderer.setRenderTarget(this.calcificationAccumTarget);
+      (this.calcificationAccumBackMaterial.uniforms.uWeight as Uniform).value = entry.absorption;
+      (this.calcificationAccumFrontMaterial.uniforms.uWeight as Uniform).value = entry.absorption;
+      proxy.material = this.calcificationAccumBackMaterial;
+      renderer.render(this.peelScene, camera);
+      proxy.material = this.calcificationAccumFrontMaterial;
+      renderer.render(this.peelScene, camera);
+    });
+    for (let i = handle.calcificationProxies.length; i < this.calcificationProxies.length; i++) {
+      const stale = this.calcificationProxies[i];
+      if (stale) {
+        this.peelScene.remove(stale);
+        this.calcificationProxies[i] = null;
+        this.calcificationProxySourceGeometry[i] = null;
+      }
+    }
+    this.uniforms.get("uCalcificationAccum")!.value = anyCalcificationVisible ? this.calcificationAccumTarget.texture : null;
 
     // 全パス終了後は全プロキシを再びvisible=trueに戻しておく(次フレームの
     // activateOnlyProxy呼び出し前に他コードが誤って全滅表示のpeelSceneを参照しても
@@ -604,7 +696,10 @@ export class CineVesselThicknessEffect extends Effect {
       if (proxy) proxy.visible = true;
     }
     if (this.heartProxy) this.heartProxy.visible = true;
-    for (const proxy of this.objectProxies) {
+    for (const proxy of this.stentProxies) {
+      if (proxy) proxy.visible = true;
+    }
+    for (const proxy of this.calcificationProxies) {
       if (proxy) proxy.visible = true;
     }
     for (const proxy of this.lumenSubtractionProxies) {
@@ -618,13 +713,16 @@ export class CineVesselThicknessEffect extends Effect {
   override dispose(): void {
     this.vesselAccumTarget.dispose();
     this.heartAccumTarget.dispose();
-    this.objectAccumTarget.dispose();
+    this.stentAccumTarget.dispose();
+    this.calcificationAccumTarget.dispose();
     this.vesselAccumBackMaterial.dispose();
     this.vesselAccumFrontMaterial.dispose();
     this.heartAccumBackMaterial.dispose();
     this.heartAccumFrontMaterial.dispose();
-    this.objectAccumBackMaterial.dispose();
-    this.objectAccumFrontMaterial.dispose();
+    this.stentAccumBackMaterial.dispose();
+    this.stentAccumFrontMaterial.dispose();
+    this.calcificationAccumBackMaterial.dispose();
+    this.calcificationAccumFrontMaterial.dispose();
     super.dispose();
   }
 }

@@ -21,21 +21,6 @@ const FULL_CIRCLE_THRESHOLD_DEG = 359.9;
  */
 const MIN_ANGLE_SPAN_DEG = 0.5;
 
-/** 表面の不規則な凹凸の振幅(半径に対する比率)。オプションのリアルさ向上用。 */
-const SURFACE_NOISE_AMPLITUDE = 0.06;
-
-/** シード固定の疑似乱数(0〜1)。既存のステント/狭窄と同じハッシュ方式。 */
-function hash(seed: number): number {
-  const x = Math.sin(seed * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
-}
-
-function hashSeedFromId(id: string): number {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 100000;
-  return h + 1;
-}
-
 interface ShellFrame {
   /** 平滑化済み中心線点 */
   points: Vector3[];
@@ -120,7 +105,6 @@ function buildRadialGrid(
   orientationRad: number,
   halfSpanRad: number,
   angularSegments: number,
-  noiseSeed: number | null,
 ): RadialGrid {
   const n = frame.points.length;
   const positions: Vector3[][] = [];
@@ -138,8 +122,7 @@ function buildRadialGrid(
         Math.cos(a) * N.y + Math.sin(a) * B.y,
         Math.cos(a) * N.z + Math.sin(a) * B.z,
       ).normalize();
-      const noise = noiseSeed === null ? 1 : 1 + SURFACE_NOISE_AMPLITUDE * (hash(noiseSeed + i * 12.9 + k * 3.7) * 2 - 1);
-      const r = radii[i] * noise;
+      const r = radii[i];
       row.push(new Vector3(frame.points[i].x + dir.x * r, frame.points[i].y + dir.y * r, frame.points[i].z + dir.z * r));
       nrow.push(dir);
     }
@@ -297,6 +280,14 @@ function buildLongitudinalCap(frame: ShellFrame, outerGrid: RadialGrid, innerGri
  * 閉じ、1つの閉じたシェルジオメトリにする。深度ピールのfront/backカリングが
  * 正しく機能するには、これらのキャップも含めて全体が閉じた2-manifoldである必要が
  * あるため、pushOrientedTriangleで巻き順を自動的に正しく揃えている。
+ *
+ * 以前は表面にごく小さな凹凸ノイズ(±6%程度の半径ジッター)を掛けて石灰化らしい
+ * 不整形さを表現していたが、シネX線モードの深度ピール(前面/背面深度差から厚みを
+ * 求める)と組み合わせると、細かい凹凸ひとつひとつが独立した前面/背面の交差点を
+ * 作ってしまい、本来1つの滑らかな影になるはずの部分が多数の小さな黒い斑点に
+ * 分裂して見える不具合が実機検証で確認された。ブラー(mainImage側)で吸収できる
+ * 程度を超えていたため、ノイズは廃止し、血管の自然なカーブに沿った滑らかな
+ * シェル形状のみで「完全な円柱ではない不整形さ」を表現する方針にした。
  */
 function buildShell(
   frame: ShellFrame,
@@ -305,13 +296,12 @@ function buildShell(
   angleSpanRad: number,
   orientationRad: number,
   angularSegments: number,
-  noiseSeed: number | null,
 ): BufferGeometry {
   const halfSpanRad = angleSpanRad / 2;
   const isFullRing = angleSpanRad >= (FULL_CIRCLE_THRESHOLD_DEG * Math.PI) / 180;
 
-  const outerGrid = buildRadialGrid(frame, outerRadii, orientationRad, halfSpanRad, angularSegments, noiseSeed);
-  const innerGrid = buildRadialGrid(frame, innerRadii, orientationRad, halfSpanRad, angularSegments, noiseSeed);
+  const outerGrid = buildRadialGrid(frame, outerRadii, orientationRad, halfSpanRad, angularSegments);
+  const innerGrid = buildRadialGrid(frame, innerRadii, orientationRad, halfSpanRad, angularSegments);
 
   const parts = [
     triangulateRadialGrid(outerGrid),
@@ -380,8 +370,9 @@ export function buildCalcificationGeometry(
     innerRadii.push(Math.max(R * MIN_LUMEN_RADIUS_RATIO, R - growth));
   }
 
-  const noiseSeed = hashSeedFromId(object.id);
-  const visual = buildShell(frame, vesselRadii, innerRadii, angleSpanRad, orientationRad, ANGULAR_SEGMENTS, noiseSeed);
-  const lumenNarrowing = buildShell(frame, vesselRadii, innerRadii, angleSpanRad, orientationRad, ANGULAR_SEGMENTS, null);
-  return { visual, lumenNarrowing };
+  // 可視化用(visual)と内腔減算用(lumenNarrowing)は全く同じ外径・内径・角度範囲の
+  // シェルなので(以前は表面ノイズの有無だけが違ったが、そのノイズ自体を廃止した
+  // ため)、1回だけ生成して同じジオメトリを両方の用途に使い回す。
+  const shell = buildShell(frame, vesselRadii, innerRadii, angleSpanRad, orientationRad, ANGULAR_SEGMENTS);
+  return { visual: shell, lumenNarrowing: shell };
 }

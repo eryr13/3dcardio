@@ -175,25 +175,44 @@ export function CineAnatomyModel() {
     built.outline.rimMesh.visible = visible;
   }, [built, showHeartOutline, xrayMode]);
 
-  // 石灰化・ステントのオブジェクトメッシュへの参照を集約し、CineVesselThicknessEffectが
-  // リアルX線モードで深度ピール密度表現に使う共有アキュムレータ(cineSceneBridge.objectProxies)へ
-  // 反映する。個々のCineCalcificationBump/CineStentLatticeのrefコールバックから呼ばれる。
-  // 加算合成方式のため件数上限は無い(以前は6件に切り詰めていたが、テクスチャ数が
-  // スロット数と無関係になったため不要になった)。
-  const objectMeshRefsById = useRef(new Map<string, { mesh: Mesh; absorption: number }>());
+  // ステントのメッシュへの参照を集約し、CineVesselThicknessEffectがリアルX線モードで
+  // 深度ピール密度表現に使う共有アキュムレータ(cineSceneBridge.stentProxies)へ反映する。
+  // CineStentLatticeのrefコールバックから呼ばれる。石灰化とは別チャンネル(ブラー無し)
+  // にすることで、金属の網目らしい鋭さを保つ。加算合成方式のため件数上限は無い。
+  const stentMeshRefsById = useRef(new Map<string, { mesh: Mesh; absorption: number }>());
 
-  function syncObjectProxies() {
+  function syncStentProxies() {
     if (!cineSceneBridge.current) return;
-    cineSceneBridge.current.objectProxies = Array.from(objectMeshRefsById.current.entries()).map(
+    cineSceneBridge.current.stentProxies = Array.from(stentMeshRefsById.current.entries()).map(
       ([id, entry]) => ({ id, mesh: entry.mesh, absorption: entry.absorption }),
     );
   }
 
-  function registerObjectMesh(id: string, absorption: number) {
+  function registerStentMesh(id: string, absorption: number) {
     return (mesh: Mesh | null) => {
-      if (mesh) objectMeshRefsById.current.set(id, { mesh, absorption });
-      else objectMeshRefsById.current.delete(id);
-      syncObjectProxies();
+      if (mesh) stentMeshRefsById.current.set(id, { mesh, absorption });
+      else stentMeshRefsById.current.delete(id);
+      syncStentProxies();
+    };
+  }
+
+  // 石灰化のメッシュへの参照を集約し、CineVesselThicknessEffectが専用アキュムレータ
+  // (cineSceneBridge.calcificationProxies、ブラーあり)へ反映する。
+  // CineCalcificationBumpのrefコールバックから呼ばれる。
+  const calcificationMeshRefsById = useRef(new Map<string, { mesh: Mesh; absorption: number }>());
+
+  function syncCalcificationProxies() {
+    if (!cineSceneBridge.current) return;
+    cineSceneBridge.current.calcificationProxies = Array.from(calcificationMeshRefsById.current.entries()).map(
+      ([id, entry]) => ({ id, mesh: entry.mesh, absorption: entry.absorption }),
+    );
+  }
+
+  function registerCalcificationMesh(id: string, absorption: number) {
+    return (mesh: Mesh | null) => {
+      if (mesh) calcificationMeshRefsById.current.set(id, { mesh, absorption });
+      else calcificationMeshRefsById.current.delete(id);
+      syncCalcificationProxies();
     };
   }
 
@@ -261,7 +280,7 @@ export function CineAnatomyModel() {
             centerline={branch.points}
             heartCentroid={heartCentroid}
             xrayMode={xrayMode}
-            onRef={registerObjectMesh(object.id, xrayParams.calcificationAbsorption)}
+            onRef={registerCalcificationMesh(object.id, xrayParams.calcificationAbsorption)}
             onRefNarrowing={registerLumenSubtractionMesh(`${object.id}-narrowing`, -1)}
           />
         );
@@ -277,7 +296,7 @@ export function CineAnatomyModel() {
             centerline={branch.points}
             xrayMode={xrayMode}
             stentLatticeParams={stentLatticeParams}
-            onRef={registerObjectMesh(object.id, xrayParams.stentAbsorption)}
+            onRef={registerStentMesh(object.id, xrayParams.stentAbsorption)}
           />
         );
       })}
