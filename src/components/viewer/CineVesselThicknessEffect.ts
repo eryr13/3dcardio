@@ -2,8 +2,8 @@ import { Effect, BlendFunction } from "postprocessing";
 import {
   BackSide,
   Camera,
-  FloatType,
   FrontSide,
+  HalfFloatType,
   LinearFilter,
   Mesh,
   RGBAFormat,
@@ -206,9 +206,19 @@ function createDepthMaterial(
   return new ShaderMaterial({ vertexShader, fragmentShader, side });
 }
 
+/**
+ * FloatType(32bit浮動小数点)ではなくHalfFloatType(16bit)を使う。フル32bit
+ * float は「レンダーターゲットとして描画できる」ことと「LinearFilterで
+ * サンプリングできる」ことの両方に別々の拡張(EXT_color_buffer_float /
+ * OES_texture_float_linear)を要求し、特にWindows/ANGLE環境ではこの組み合わせを
+ * ドライバが完全にはサポートしないことがあり、対応していないと深度ピールの
+ * レンダーターゲットが正しく描画されず画面に何も映らなくなる。HalfFloatは
+ * より広く安定してサポートされており、ここで扱う値(視点からの距離の差分)の
+ * 精度としても十分。
+ */
 function createPeelTarget(): WebGLRenderTarget {
   const target = new WebGLRenderTarget(PEEL_RESOLUTION, PEEL_RESOLUTION, {
-    type: FloatType,
+    type: HalfFloatType,
     format: RGBAFormat,
     minFilter: LinearFilter,
     magFilter: LinearFilter,
