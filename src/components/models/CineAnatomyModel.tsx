@@ -223,16 +223,18 @@ export function CineAnatomyModel() {
     built.outline.rimMesh.visible = visible;
   }, [built, showHeartOutline, xrayMode]);
 
-  // Phase 6: 石灰化・ステントのオブジェクトメッシュへの参照を集約し、CineVesselThicknessEffectが
-  // リアルX線モードで深度ピール密度表現に使う固定プール(cineSceneBridge.objectProxies)へ
+  // 石灰化・ステントのオブジェクトメッシュへの参照を集約し、CineVesselThicknessEffectが
+  // リアルX線モードで深度ピール密度表現に使う共有アキュムレータ(cineSceneBridge.objectProxies)へ
   // 反映する。個々のCineCalcificationBump/CineStentLatticeのrefコールバックから呼ばれる。
+  // 加算合成方式のため件数上限は無い(以前は6件に切り詰めていたが、テクスチャ数が
+  // スロット数と無関係になったため不要になった)。
   const objectMeshRefsById = useRef(new Map<string, { mesh: Mesh; absorption: number }>());
 
   function syncObjectProxies() {
     if (!cineSceneBridge.current) return;
-    cineSceneBridge.current.objectProxies = Array.from(objectMeshRefsById.current.entries())
-      .slice(0, 6)
-      .map(([id, entry]) => ({ id, mesh: entry.mesh, absorption: entry.absorption }));
+    cineSceneBridge.current.objectProxies = Array.from(objectMeshRefsById.current.entries()).map(
+      ([id, entry]) => ({ id, mesh: entry.mesh, absorption: entry.absorption }),
+    );
   }
 
   function registerObjectMesh(id: string, absorption: number) {
