@@ -5,6 +5,8 @@ import { getLesionsForVessel } from "../../types/lesion";
 import { buildCalcificationMesh } from "./calcificationMesh";
 import { buildStentGeometry } from "./stentLatticeMesh";
 import type { CenterlinePoint } from "./vesselCenterline";
+import type { VesselGraph } from "./vesselGraph";
+import { getBranch } from "./vesselGraph";
 
 /**
  * 石灰化プラークのジオメトリをメモ化するフック。メインビュー・シネビューの
@@ -30,7 +32,7 @@ export function useStentGeometry(centerline: CenterlinePoint[], lesion: StentLes
 
 interface LesionMeshesProps {
   vesselId: VesselId;
-  centerline: CenterlinePoint[];
+  graph: VesselGraph;
   lesions: Lesion[];
 }
 
@@ -40,25 +42,28 @@ interface LesionMeshesProps {
  * (vesselCenterline.applyStenosisDeformation)で表現するため、ここでは追加
  * メッシュを生成しない。シネビュー側は同じ `useCalcificationGeometry` /
  * `useStentGeometry` フックを使い、X線風の別マテリアルで独自に描画する
- * (CineAnatomyModel.tsx 参照)。
+ * (CineAnatomyModel.tsx 参照)。各病変は branchId で指定された枝の中心線
+ * (本幹または側枝)を使って描画するため、存在しない枝を参照する病変は無視する。
  */
-export function LesionMeshes({ vesselId, centerline, lesions }: LesionMeshesProps) {
+export function LesionMeshes({ vesselId, graph, lesions }: LesionMeshesProps) {
   const vesselLesions = useMemo(() => getLesionsForVessel(lesions, vesselId), [lesions, vesselId]);
-
-  if (centerline.length === 0) return null;
 
   return (
     <>
       {vesselLesions
         .filter((l): l is CalcificationLesion => l.type === "calcification" && l.visible)
-        .map((lesion) => (
-          <CalcificationBump key={lesion.id} lesion={lesion} centerline={centerline} />
-        ))}
+        .map((lesion) => {
+          const branch = getBranch(graph, lesion.branchId);
+          if (!branch) return null;
+          return <CalcificationBump key={lesion.id} lesion={lesion} centerline={branch.points} />;
+        })}
       {vesselLesions
         .filter((l): l is StentLesion => l.type === "stent" && l.visible)
-        .map((lesion) => (
-          <StentLattice key={lesion.id} lesion={lesion} centerline={centerline} />
-        ))}
+        .map((lesion) => {
+          const branch = getBranch(graph, lesion.branchId);
+          if (!branch) return null;
+          return <StentLattice key={lesion.id} lesion={lesion} centerline={branch.points} />;
+        })}
     </>
   );
 }

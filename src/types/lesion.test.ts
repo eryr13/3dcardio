@@ -11,6 +11,7 @@ function stenosis(overrides: Partial<StenosisLesion> = {}): StenosisLesion {
     id: "s1",
     type: "stenosis",
     vesselId: "RCA",
+    branchId: "RCA-main",
     position: 0.5,
     length: 0.1,
     severity: 70,
@@ -24,6 +25,7 @@ function calcification(overrides: Partial<CalcificationLesion> = {}): Calcificat
     id: "c1",
     type: "calcification",
     vesselId: "RCA",
+    branchId: "RCA-main",
     position: 0.5,
     length: 0.1,
     severity: 50,
@@ -37,6 +39,7 @@ function stent(overrides: Partial<StentLesion> = {}): StentLesion {
     id: "st1",
     type: "stent",
     vesselId: "RCA",
+    branchId: "RCA-main",
     position: 0.5,
     length: 0.1,
     diameter: 3,
@@ -65,14 +68,14 @@ describe("getStenosisSeverityAt", () => {
   it("returns 0 when no stenosis covers the given t", () => {
     const lesions: Lesion[] = [stenosis({ position: 0.5, length: 0.1, severity: 80 })];
     // 0.5 ± 0.05 の範囲外
-    expect(getStenosisSeverityAt(lesions, "RCA", 0.9)).toBe(0);
+    expect(getStenosisSeverityAt(lesions, "RCA", "RCA-main", 0.9)).toBe(0);
   });
 
   it("returns the severity when t falls within [position - length/2, position + length/2]", () => {
     const lesions: Lesion[] = [stenosis({ position: 0.5, length: 0.2, severity: 65 })];
-    expect(getStenosisSeverityAt(lesions, "RCA", 0.5)).toBe(65);
-    expect(getStenosisSeverityAt(lesions, "RCA", 0.41)).toBe(65);
-    expect(getStenosisSeverityAt(lesions, "RCA", 0.59)).toBe(65);
+    expect(getStenosisSeverityAt(lesions, "RCA", "RCA-main", 0.5)).toBe(65);
+    expect(getStenosisSeverityAt(lesions, "RCA", "RCA-main", 0.41)).toBe(65);
+    expect(getStenosisSeverityAt(lesions, "RCA", "RCA-main", 0.59)).toBe(65);
   });
 
   it("returns the maximum severity when multiple stenoses overlap the same t", () => {
@@ -80,12 +83,12 @@ describe("getStenosisSeverityAt", () => {
       stenosis({ id: "a", position: 0.5, length: 0.4, severity: 40 }),
       stenosis({ id: "b", position: 0.5, length: 0.4, severity: 90 }),
     ];
-    expect(getStenosisSeverityAt(lesions, "RCA", 0.5)).toBe(90);
+    expect(getStenosisSeverityAt(lesions, "RCA", "RCA-main", 0.5)).toBe(90);
   });
 
   it("ignores lesions on other vessels", () => {
     const lesions: Lesion[] = [stenosis({ vesselId: "LAD", position: 0.5, length: 0.4, severity: 90 })];
-    expect(getStenosisSeverityAt(lesions, "RCA", 0.5)).toBe(0);
+    expect(getStenosisSeverityAt(lesions, "RCA", "RCA-main", 0.5)).toBe(0);
   });
 
   it("ignores non-stenosis lesions", () => {
@@ -93,12 +96,12 @@ describe("getStenosisSeverityAt", () => {
       calcification({ position: 0.5, length: 0.4, severity: 90 }),
       stent({ position: 0.5, length: 0.4 }),
     ];
-    expect(getStenosisSeverityAt(lesions, "RCA", 0.5)).toBe(0);
+    expect(getStenosisSeverityAt(lesions, "RCA", "RCA-main", 0.5)).toBe(0);
   });
 
   it("ignores lesions with visible=false", () => {
     const lesions: Lesion[] = [stenosis({ position: 0.5, length: 0.4, severity: 90, visible: false })];
-    expect(getStenosisSeverityAt(lesions, "RCA", 0.5)).toBe(0);
+    expect(getStenosisSeverityAt(lesions, "RCA", "RCA-main", 0.5)).toBe(0);
   });
 });
 

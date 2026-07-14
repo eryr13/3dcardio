@@ -17,7 +17,9 @@ import { HeartbeatGroup } from "./HeartbeatGroup";
 import { useCalcificationGeometry, useStentGeometry } from "./LesionMeshes";
 import { cineSceneBridge } from "./cineSceneBridge";
 import type { CenterlinePoint } from "./vesselCenterline";
-import { applyStenosisDeformation, getVesselCenterline } from "./vesselCenterline";
+import { applyStenosisDeformation } from "./vesselCenterline";
+import type { VesselGraph } from "./vesselGraph";
+import { getBranch, getVesselGraph } from "./vesselGraph";
 
 /** メインビューと同じGLB。将来DICOM由来メッシュに差し替える際もここを変えるだけでよい。 */
 export const REALISTIC_HEART_URL = "/models/heart-realistic.glb";
@@ -133,12 +135,12 @@ export function CineAnatomyModel() {
       if ((obj as Mesh).isMesh) meshesByName.set(obj.name, obj as Mesh);
     });
 
-    const centerlines = new Map<VesselId, CenterlinePoint[]>();
+    const graphs = new Map<VesselId, VesselGraph>();
     const originalGeometries = new Map<VesselId, BufferGeometry>();
     for (const id of VESSEL_IDS) {
       const mesh = meshesByName.get(id);
       if (!mesh) continue;
-      centerlines.set(id, getVesselCenterline(id));
+      graphs.set(id, getVesselGraph(id));
       // 狭窄変形前の素のジオメトリを保持しておく(scene.clone(true)由来でメインビューと
       // 参照を共有しているが、ここでは読み取り専用に使い、変形結果は別途複製して割り当てる)。
       originalGeometries.set(id, mesh.geometry);
@@ -167,7 +169,7 @@ export function CineAnatomyModel() {
       outline = { depthMesh, rimMesh };
     }
 
-    return { root, meshesByName, centerlines, originalGeometries, outline };
+    return { root, meshesByName, graphs, originalGeometries, outline };
   }, [scene]);
 
   // Phase 6: 狭窄病変に基づいてジオメトリを変形し、深度ピール用のaProximity属性を
@@ -176,13 +178,13 @@ export function CineAnatomyModel() {
   useEffect(() => {
     for (const id of VESSEL_IDS) {
       const mesh = built.meshesByName.get(id);
-      const centerline = built.centerlines.get(id);
+      const graph = built.graphs.get(id);
       const originalGeometry = built.originalGeometries.get(id);
-      if (!mesh || !centerline || !originalGeometry) continue;
+      if (!mesh || !graph || !originalGeometry) continue;
       const stenoses = getLesionsForVessel(lesions, id).filter(
         (l): l is StenosisLesion => l.type === "stenosis",
       );
-      const deformed = applyStenosisDeformation(originalGeometry, centerline, stenoses);
+      const deformed = applyStenosisDeformation(originalGeometry, graph, stenoses);
       mesh.geometry = attachProximityAttribute(deformed);
     }
   }, [built, lesions]);
@@ -256,26 +258,28 @@ export function CineAnatomyModel() {
       <primitive object={built.root} />
 
       {visibleCalcifications.map((lesion) => {
-        const centerline = built.centerlines.get(lesion.vesselId);
-        if (!centerline) return null;
+        const graph = built.graphs.get(lesion.vesselId);
+        const branch = graph && getBranch(graph, lesion.branchId);
+        if (!branch) return null;
         return (
           <CineCalcificationBump
             key={lesion.id}
             lesion={lesion}
-            centerline={centerline}
+            centerline={branch.points}
             xrayMode={xrayMode}
             onRef={registerLesionMesh(lesion.id, CALCIFICATION_ABSORPTION)}
           />
         );
       })}
       {visibleStents.map((lesion) => {
-        const centerline = built.centerlines.get(lesion.vesselId);
-        if (!centerline) return null;
+        const graph = built.graphs.get(lesion.vesselId);
+        const branch = graph && getBranch(graph, lesion.branchId);
+        if (!branch) return null;
         return (
           <CineStentLattice
             key={lesion.id}
             lesion={lesion}
-            centerline={centerline}
+            centerline={branch.points}
             xrayMode={xrayMode}
             onRef={registerLesionMesh(lesion.id, STENT_ABSORPTION)}
           />

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ThreeEvent } from "@react-three/fiber";
 import { Html, Line, useGLTF } from "@react-three/drei";
-import { Vector3 } from "three";
+import type { Vector3 } from "three";
 import type { BufferGeometry, Mesh, MeshStandardMaterial } from "three";
 import type { AnatomyDisplayState, VesselId, ModelSource } from "../../types/anatomy";
 import type { StenosisLesion, StentLesion } from "../../types/lesion";
@@ -12,8 +11,9 @@ import { HeartbeatGroup } from "./HeartbeatGroup";
 import { LesionMeshes } from "./LesionMeshes";
 import { buildStentGeometry } from "./stentLatticeMesh";
 import { VesselModel } from "./VesselModel";
-import type { CenterlinePoint } from "./vesselCenterline";
-import { applyStenosisDeformation, getVesselCenterline } from "./vesselCenterline";
+import { applyStenosisDeformation } from "./vesselCenterline";
+import type { VesselGraph } from "./vesselGraph";
+import { getBranch, getBranchesAtNode, getMainTrunk, getVesselGraph } from "./vesselGraph";
 import { SEGMENT_DEFS, splitGeometryByLength } from "./vesselSegments";
 
 const VESSEL_IDS: VesselId[] = ["RCA", "LAD", "LCX"];
@@ -53,53 +53,115 @@ export function AnatomyModels({ source = { type: "gltf", url: REALISTIC_HEART_UR
 }
 
 /**
- * デバッグ用: 病変配置ロジックが参照している中心線データそのものを、実際の血管メッシュに
- * 重ねて可視化する(病変・ステントのジオメトリ生成は一切行わない)。血管メッシュ側と
- * 中心線データ側で座標変換の不整合(scale/rotation/position offsetの適用漏れ)が
- * 無いかを目視確認するための一時的なコード。
+ * デバッグ用: 中心線グラフの全枝(本幹+側枝)を、実際の血管メッシュに重ねて可視化する
+ * (病変・ステントのジオメトリ生成は一切行わない)。本幹判定ロジックが解剖学的に
+ * 妥当な経路を選べているか、側枝が正しく分離されているかを目視確認するための一時的なコード。
+ * 本幹は白の太線、側枝は枝ごとに色を変えた細線で表示する。
  */
 const DEBUG_SHOW_CENTERLINES = true;
-const CENTERLINE_DEBUG_COLORS: Record<VesselId, string> = {
-  RCA: "#ff2d55",
-  LAD: "#ffee00",
-  LCX: "#00e5ff",
-};
+const SIDE_BRANCH_DEBUG_COLORS = ["#ff2d55", "#ffee00", "#00e5ff", "#ff9500", "#af52de", "#34c759", "#5ac8fa"];
 
-function CenterlineDebugOverlay({
-  vesselId,
-  centerline,
-}: {
-  vesselId: VesselId;
-  centerline: CenterlinePoint[];
-}) {
-  if (centerline.length < 2) return null;
-  const color = CENTERLINE_DEBUG_COLORS[vesselId];
-  const points = centerline.map((p) => p.position);
+function CenterlineDebugOverlay({ vesselId }: { vesselId: VesselId }) {
+  const graph = useMemo(() => getVesselGraph(vesselId), [vesselId]);
   return (
     <>
-      <Line points={points} color={color} lineWidth={3} />
-      {centerline.map((p, i) => (
-        <mesh key={i} position={p.position}>
-          <sphereGeometry args={[Math.max(p.radius * 0.3, 0.0015), 6, 6]} />
-          <meshBasicMaterial color={color} />
-        </mesh>
-      ))}
+      {graph.branches.map((branch, i) => {
+        if (branch.points.length < 2) return null;
+        const color = branch.isMainTrunk ? "#ffffff" : SIDE_BRANCH_DEBUG_COLORS[i % SIDE_BRANCH_DEBUG_COLORS.length];
+        const points = branch.points.map((p) => p.position);
+        return (
+          <Line
+            key={branch.id}
+            points={points}
+            color={color}
+            lineWidth={branch.isMainTrunk ? 5 : 2}
+          />
+        );
+      })}
     </>
   );
 }
 
-/** 中心線上で最もローカル座標が近い点のtを返す(3Dビュー上でのクリック位置→病変位置の変換に使う)。 */
-function nearestCenterlineT(centerline: CenterlinePoint[], localPoint: Vector3): number {
-  let best = 0;
-  let bestDistSq = Infinity;
-  for (const p of centerline) {
-    const d = p.position.distanceToSquared(localPoint);
-    if (d < bestDistSq) {
-      bestDistSq = d;
-      best = p.t;
-    }
+/**
+ * ノードクリックで選んだ位置を、病変の(branchId, position)へ変換する。
+ * 根(起始部)なら本幹のt=0。それ以外は、そのノードを端点に持つ枝のうち本幹を優先し
+ * (本幹上の分岐点ならそのまま本幹上の位置として扱う)、無ければ最初に見つかった側枝を使う。
+ * 側枝の場合、そのノードが枝の近位端(startNodeId)ならt=0、遠位端(endNodeId)ならt=1になる。
+ */
+function resolveNodeSelection(graph: VesselGraph, nodeId: string): { branchId: string; position: number } {
+  if (nodeId === graph.rootNodeId) {
+    return { branchId: getMainTrunk(graph).id, position: 0 };
   }
-  return best;
+  const candidates = getBranchesAtNode(graph, nodeId);
+  const branch = candidates.find((b) => b.isMainTrunk) ?? candidates[0];
+  if (!branch) return { branchId: getMainTrunk(graph).id, position: 0 };
+  return { branchId: branch.id, position: branch.startNodeId === nodeId ? 0 : 1 };
+}
+
+const NODE_MARKER_COLOR = "#4fd7ff";
+const NODE_MARKER_HOVER_COLOR = "#ffee00";
+
+/**
+ * 病変追加/位置変更モード中だけ表示する、中心線グラフのノード(起始部・分岐点・端点)の
+ * クリック可能なマーカー。画面が常時うるさくならないよう、呼び出し側でモード中のみ描画する。
+ */
+function NodeMarkers({
+  vesselId,
+  graph,
+  onSelect,
+}: {
+  vesselId: VesselId;
+  graph: VesselGraph;
+  onSelect: (vesselId: VesselId, nodeId: string) => void;
+}) {
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const hoveredNode = graph.nodes.find((n) => n.id === hoveredNodeId);
+  const hoveredLabel = hoveredNode
+    ? getBranchesAtNode(graph, hoveredNode.id)
+        .map((b) => b.label)
+        .join(" / ")
+    : null;
+
+  return (
+    <>
+      {graph.nodes.map((node) => {
+        const isHovered = hoveredNodeId === node.id;
+        return (
+          <mesh
+            key={node.id}
+            position={node.position}
+            renderOrder={999}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(vesselId, node.id);
+            }}
+            onPointerOver={(e) => {
+              e.stopPropagation();
+              setHoveredNodeId(node.id);
+            }}
+            onPointerOut={(e) => {
+              e.stopPropagation();
+              setHoveredNodeId((id) => (id === node.id ? null : id));
+            }}
+          >
+            <sphereGeometry args={[isHovered ? 0.028 : 0.02, 12, 12]} />
+            <meshBasicMaterial
+              color={isHovered ? NODE_MARKER_HOVER_COLOR : NODE_MARKER_COLOR}
+              transparent
+              opacity={0.9}
+              depthTest={false}
+              depthWrite={false}
+            />
+          </mesh>
+        );
+      })}
+      {hoveredNode && hoveredLabel && (
+        <Html position={hoveredNode.position} style={{ pointerEvents: "none" }}>
+          <div className="lesion-node-tooltip">{hoveredLabel} 分岐部</div>
+        </Html>
+      )}
+    </>
+  );
 }
 
 /**
@@ -125,6 +187,8 @@ function GltfAnatomyModels({ url }: { url: string }) {
   const editingLesionId = useCardioStore((s) => s.editingLesionId);
   const setEditingLesionId = useCardioStore((s) => s.setEditingLesionId);
   const updateLesion = useCardioStore((s) => s.updateLesion);
+  const pickingLesionVessel = useCardioStore((s) => s.pickingLesionVessel);
+  const setPickingLesionVessel = useCardioStore((s) => s.setPickingLesionVessel);
   const [hovered, setHovered] = useState<{ id: string; point: Vector3 } | null>(null);
 
   const meshesByName = useMemo(() => {
@@ -135,13 +199,12 @@ function GltfAnatomyModels({ url }: { url: string }) {
     return map;
   }, [scene]);
 
-  // 中心線は scripts/extract_centerlines.py が事前生成した src/data/centerlines.json
-  // (血管メッシュのボクセル化+スケルトン化による抽出、詳細は vesselCenterline.ts 参照)を
-  // そのまま使う。メッシュには依存しないため useMemo は不要。
-  const centerlines = useMemo(() => {
-    const result = new Map<VesselId, CenterlinePoint[]>();
+  // 中心線グラフ(本幹+側枝)は scripts/extract_centerlines.py が事前生成した
+  // src/data/centerlines.json をそのまま使う。メッシュには依存しないため useMemo は不要。
+  const graphs = useMemo(() => {
+    const result = new Map<VesselId, VesselGraph>();
     for (const id of VESSEL_IDS) {
-      result.set(id, getVesselCenterline(id));
+      result.set(id, getVesselGraph(id));
     }
     return result;
   }, []);
@@ -152,15 +215,15 @@ function GltfAnatomyModels({ url }: { url: string }) {
     const result = new Map<VesselId, BufferGeometry>();
     for (const id of VESSEL_IDS) {
       const mesh = meshesByName.get(id);
-      const centerline = centerlines.get(id);
-      if (!mesh || !centerline) continue;
+      const graph = graphs.get(id);
+      if (!mesh || !graph) continue;
       const stenoses = getLesionsForVessel(lesions, id).filter(
         (l): l is StenosisLesion => l.type === "stenosis",
       );
-      result.set(id, applyStenosisDeformation(mesh.geometry, centerline, stenoses));
+      result.set(id, applyStenosisDeformation(mesh.geometry, graph, stenoses));
     }
     return result;
-  }, [meshesByName, centerlines, lesions]);
+  }, [meshesByName, graphs, lesions]);
 
   useEffect(() => {
     applyDisplayState(meshesByName.get("HEART"), heart);
@@ -193,47 +256,29 @@ function GltfAnatomyModels({ url }: { url: string }) {
   }, [meshesByName, deformedGeometries]);
 
   /**
-   * 3Dビュー上のクリックを、新規追加フォームへの位置事前入力(pendingLesionPosition)、
+   * ノードマーカーのクリックを、新規追加フォームへの位置事前入力(pendingLesionPosition)、
    * または編集中の既存病変(editingLesionId)の位置更新のどちらかに振り分ける。
    * 編集モード中は、クリック1回で即座にその病変の位置を更新し編集モードを終了する
    * (「クリックし直して位置を変更」という単発操作として設計)。
    */
-  function placeLesionFromPoint(vesselId: VesselId, mesh: Mesh, worldPoint: Vector3) {
-    const centerline = centerlines.get(vesselId);
-    if (!centerline) return;
-    const localPoint = mesh.worldToLocal(worldPoint.clone());
-    const t = nearestCenterlineT(centerline, localPoint);
+  function handleNodeSelect(vesselId: VesselId, nodeId: string) {
+    const graph = graphs.get(vesselId);
+    if (!graph) return;
+    const { branchId, position } = resolveNodeSelection(graph, nodeId);
     if (editingLesionId) {
-      updateLesion(editingLesionId, { vesselId, position: t });
+      updateLesion(editingLesionId, { vesselId, branchId, position });
       setEditingLesionId(null);
     } else {
-      setPendingLesionPosition({ vesselId, position: t });
+      setPendingLesionPosition({ vesselId, branchId, position });
+      setPickingLesionVessel(null);
     }
   }
 
-  function placeLesionFromClick(vesselId: VesselId, e: ThreeEvent<MouseEvent>) {
-    e.stopPropagation();
-    placeLesionFromPoint(vesselId, e.object as Mesh, e.point);
-  }
-
-  /**
-   * <primitive object={scene}> はHEART/RCA/LAD/LCXをまとめて1つのオブジェクトツリーとして
-   * 扱うため、このonClickは(名前が一致する子孫を持つ祖先として)ツリー内で最も手前の
-   * 交差1件だけを e.object として受け取る。three.jsのraycastは既定でvisible=falseの
-   * オブジェクトを除外しないため、心臓の表示をOFFにしていても、視点から見て血管より
-   * 手前にある(無効化されていない)心臓メッシュがヒットしてしまい、血管がクリックできない
-   * 不具合があった(実機検証で確認: 心臓非表示のままLAD/RCA/LCXをクリックしても
-   * e.object.name が "HEART" になっていた)。e.intersections(交差全件、手前から順)を
-   * 走査し、実際にvisibleな血管メッシュが見つかるまでスキップすることで回避する。
-   */
-  function handlePrimitiveClick(e: ThreeEvent<MouseEvent>) {
-    const hit = e.intersections.find(
-      (i) => i.object.visible && VESSEL_IDS.includes(i.object.name as VesselId),
-    );
-    if (!hit) return;
-    e.stopPropagation();
-    placeLesionFromPoint(hit.object.name as VesselId, hit.object as Mesh, hit.point);
-  }
+  // ノードマーカーを表示する血管: 新規追加のため明示的に選択開始した血管、または
+  // 既存病変を位置変更中の場合はその病変の血管(画面が常時うるさくならないよう、
+  // どちらでもない間はマーカーを一切表示しない)。
+  const editingLesion = editingLesionId ? lesions.find((l) => l.id === editingLesionId) : undefined;
+  const nodePickerVesselId = pickingLesionVessel ?? editingLesion?.vesselId ?? null;
 
   /**
    * 病変追加フォームで位置・長さを微調整している間の配置プレビュー(簡易円筒)。
@@ -244,24 +289,26 @@ function GltfAnatomyModels({ url }: { url: string }) {
    */
   const previewGeometry = useMemo(() => {
     if (!previewLesion) return null;
-    const centerline = centerlines.get(previewLesion.vesselId);
-    if (!centerline) return null;
+    const graph = graphs.get(previewLesion.vesselId);
+    const branch = graph && getBranch(graph, previewLesion.branchId);
+    if (!branch) return null;
     const fakeStent: StentLesion = {
       id: "preview",
       type: "stent",
       vesselId: previewLesion.vesselId,
+      branchId: previewLesion.branchId,
       position: previewLesion.position,
       length: previewLesion.length,
       diameter: 3.0,
       visible: true,
     };
-    return buildStentGeometry(centerline, fakeStent);
+    return buildStentGeometry(branch.points, fakeStent);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [centerlines, previewLesion?.vesselId, previewLesion?.position, previewLesion?.length]);
+  }, [graphs, previewLesion?.vesselId, previewLesion?.branchId, previewLesion?.position, previewLesion?.length]);
 
   return (
     <HeartbeatGroup>
-      <primitive object={scene} onClick={handlePrimitiveClick} />
+      <primitive object={scene} />
 
       {/* 狭窄変形が入っている主幹の置き換えメッシュ(セグメントモードOFF時のみ) */}
       {!segmentMode &&
@@ -279,7 +326,6 @@ function GltfAnatomyModels({ url }: { url: string }) {
               visible={state.visible}
               castShadow
               receiveShadow
-              onClick={(e) => placeLesionFromClick(id, e)}
             >
               <meshStandardMaterial
                 color={state.color}
@@ -322,7 +368,6 @@ function GltfAnatomyModels({ url }: { url: string }) {
                   e.stopPropagation();
                   setHovered((h) => (h?.id === def.id ? null : h));
                 }}
-                onClick={(e) => placeLesionFromClick(trunkId, e)}
               >
                 <meshStandardMaterial
                   color={state.color}
@@ -350,17 +395,26 @@ function GltfAnatomyModels({ url }: { url: string }) {
       )}
 
       {VESSEL_IDS.map((id) => {
-        const centerline = centerlines.get(id);
-        if (!centerline || !vessels[id]?.visible) return null;
-        return <LesionMeshes key={id} vesselId={id} centerline={centerline} lesions={lesions} />;
+        const graph = graphs.get(id);
+        if (!graph || !vessels[id]?.visible) return null;
+        return <LesionMeshes key={id} vesselId={id} graph={graph} lesions={lesions} />;
       })}
 
       {DEBUG_SHOW_CENTERLINES &&
         VESSEL_IDS.map((id) => {
-          const centerline = centerlines.get(id);
-          if (!centerline || !vessels[id]?.visible) return null;
-          return <CenterlineDebugOverlay key={`centerline-debug-${id}`} vesselId={id} centerline={centerline} />;
+          if (!vessels[id]?.visible) return null;
+          return <CenterlineDebugOverlay key={`centerline-debug-${id}`} vesselId={id} />;
         })}
+
+      {nodePickerVesselId &&
+        vessels[nodePickerVesselId]?.visible &&
+        graphs.get(nodePickerVesselId) && (
+          <NodeMarkers
+            vesselId={nodePickerVesselId}
+            graph={graphs.get(nodePickerVesselId)!}
+            onSelect={handleNodeSelect}
+          />
+        )}
 
       {previewGeometry && previewLesion && vessels[previewLesion.vesselId]?.visible && (
         <mesh geometry={previewGeometry}>

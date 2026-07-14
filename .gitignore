@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Python (scripts/extract_centerlines.py one-off preprocessing tooling)
+__pycache__/
+*.pyc
+.venv-centerline/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

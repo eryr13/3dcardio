@@ -10,9 +10,14 @@ interface LesionBase {
   id: string;
   vesselId: VesselId;
   /**
-   * 血管中心線に沿った正規化位置。0=近位(起始部に近い) 〜 1=遠位(末梢側)。
-   * vesselSegments.ts の「ローカルY座標が高いほど近位」という既存の向きと揃えて
-   * 算出する(vesselCenterline.ts 参照)。
+   * 配置先の枝ID(vesselGraph.ts の CenterlineBranch.id)。本幹は"{vesselId}-main"、
+   * 側枝は発見順に"{vesselId}-side1"のように命名される(scripts/extract_centerlines.py参照)。
+   */
+  branchId: string;
+  /**
+   * 枝(branchId)の中心線に沿った正規化位置。0=枝の近位端 〜 1=枝の遠位端。
+   * 本幹ではvesselGraphのrootNodeIdに近い側が0、側枝ではその枝が本幹から
+   * 分岐する分岐点側が0になる(vesselGraph.ts の CenterlineBranch.points 参照)。
    */
   position: number;
   /**
@@ -74,14 +79,20 @@ function lesionCoversT(lesion: Lesion, t: number): boolean {
 }
 
 /**
- * 指定した血管上の位置tにおける狭窄率(0〜99)。複数の狭窄が重なる場合は最大値を返す。
- * Phase 7の「狭窄部を通過する際に流速が落ちる」表現で、中心線をサンプリングしながら
- * この関数を呼ぶ想定。
+ * 指定した枝(vesselId+branchId)上の位置tにおける狭窄率(0〜99)。複数の狭窄が重なる場合は
+ * 最大値を返す。Phase 7の「狭窄部を通過する際に流速が落ちる」表現で、中心線をサンプリング
+ * しながらこの関数を呼ぶ想定。
  */
-export function getStenosisSeverityAt(lesions: Lesion[], vesselId: VesselId, t: number): number {
+export function getStenosisSeverityAt(
+  lesions: Lesion[],
+  vesselId: VesselId,
+  branchId: string,
+  t: number,
+): number {
   let max = 0;
   for (const lesion of lesions) {
-    if (lesion.type !== "stenosis" || lesion.vesselId !== vesselId || !lesion.visible) continue;
+    if (lesion.type !== "stenosis" || lesion.vesselId !== vesselId || lesion.branchId !== branchId) continue;
+    if (!lesion.visible) continue;
     if (!lesionCoversT(lesion, t)) continue;
     if (lesion.severity > max) max = lesion.severity;
   }

@@ -82,25 +82,35 @@ interface CardioStore {
   updateLesion: (id: string, patch: LesionPatch) => void;
   removeLesion: (id: string) => void;
   /**
-   * 3Dビュー上で血管をクリックした際、病変追加フォームへ事前入力する一時的な
-   * 位置。フォーム側で消費(addLesion実行、またはキャンセル)したら null に戻す。
+   * 3Dビュー上でノードをクリックした際、病変追加フォームへ事前入力する一時的な
+   * 位置(枝ID+その枝上の位置)。フォーム側で消費(addLesion実行、またはキャンセル)
+   * したら null に戻す。
    */
-  pendingLesionPosition: { vesselId: VesselId; position: number } | null;
-  setPendingLesionPosition: (v: { vesselId: VesselId; position: number } | null) => void;
+  pendingLesionPosition: { vesselId: VesselId; branchId: string; position: number } | null;
+  setPendingLesionPosition: (v: { vesselId: VesselId; branchId: string; position: number } | null) => void;
   /**
    * 病変追加フォームで位置・長さを微調整している間、3Dビューにライブプレビュー
    * (簡易円筒)を表示するための一時状態。まだstore.lesionsには登録されていない
    * (=addLesion実行前の)下書き状態を表す。
    */
-  previewLesion: { vesselId: VesselId; position: number; length: number } | null;
-  setPreviewLesion: (v: { vesselId: VesselId; position: number; length: number } | null) => void;
+  previewLesion: { vesselId: VesselId; branchId: string; position: number; length: number } | null;
+  setPreviewLesion: (
+    v: { vesselId: VesselId; branchId: string; position: number; length: number } | null,
+  ) => void;
   /**
-   * 登録済み病変の位置を「3Dビューをクリックし直して変更」するモード。
+   * 登録済み病変の位置を「3Dビューでノードをクリックし直して変更」するモード。
    * nullでない間は、ModelLoader側のクリックハンドラがpendingLesionPositionの
    * 代わりにこのIDの病変を直接updateLesionで更新する。
    */
   editingLesionId: string | null;
   setEditingLesionId: (id: string | null) => void;
+  /**
+   * 新規病変追加のため、3Dビュー上でノードマーカーを表示してクリック待ちにしている
+   * 血管。画面が常時うるさくならないよう、ノードマーカーは「病変を追加」フォームで
+   * 明示的に位置選択を開始した間、またはeditingLesionIdが設定されている間だけ表示する。
+   */
+  pickingLesionVessel: VesselId | null;
+  setPickingLesionVessel: (v: VesselId | null) => void;
 }
 
 export interface CameraAngleRequest {
@@ -315,6 +325,9 @@ export const useCardioStore = create<CardioStore>((set) => ({
 
   editingLesionId: null,
   setEditingLesionId: (id) => set({ editingLesionId: id }),
+
+  pickingLesionVessel: null,
+  setPickingLesionVessel: (v) => set({ pickingLesionVessel: v }),
 }));
 
 function createLesionId(): string {

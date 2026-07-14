@@ -508,3 +508,39 @@
   padding: 3px 8px;
   font-size: 0.76rem;
 }
+
+.lesion-fork-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px;
+  background: #1f2a35;
+  border: 1px solid #4fd7ff;
+  border-radius: 6px;
+}
+
+.lesion-fork-choice p {
+  width: 100%;
+  margin: 0 0 4px;
+  font-size: 0.8rem;
+  color: #4fd7ff;
+}
+
+.lesion-fork-choice button {
+  width: auto;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+}
+
+.lesion-node-tooltip {
+  background: #1f2a35;
+  color: #e6edf3;
+  border: 1px solid #4fd7ff;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  transform: translate(12px, -12px);
+}
