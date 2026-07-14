@@ -3,12 +3,12 @@ import { Html, Line, useGLTF } from "@react-three/drei";
 import type { Vector3 } from "three";
 import type { BufferGeometry, Mesh, MeshStandardMaterial } from "three";
 import type { AnatomyDisplayState, VesselId, ModelSource } from "../../types/anatomy";
-import type { StenosisLesion, StentLesion } from "../../types/lesion";
-import { getLesionsForVessel } from "../../types/lesion";
+import type { StenosisObject, StentObject } from "../../types/object";
+import { getObjectsForVessel } from "../../types/object";
 import { useCardioStore } from "../../store/useCardioStore";
 import { HeartModel } from "./HeartModel";
 import { HeartbeatGroup } from "./HeartbeatGroup";
-import { LesionMeshes } from "./LesionMeshes";
+import { ObjectMeshes } from "./ObjectMeshes";
 import { buildStentGeometry } from "./stentLatticeMesh";
 import { VesselModel } from "./VesselModel";
 import { applyStenosisDeformation } from "./vesselCenterline";
@@ -54,7 +54,7 @@ export function AnatomyModels({ source = { type: "gltf", url: REALISTIC_HEART_UR
 
 /**
  * デバッグ用: 中心線グラフの全枝(本幹+側枝)を、実際の血管メッシュに重ねて可視化する
- * (病変・ステントのジオメトリ生成は一切行わない)。本幹判定ロジックが解剖学的に
+ * (オブジェクトのジオメトリ生成は一切行わない)。本幹判定ロジックが解剖学的に
  * 妥当な経路を選べているか、側枝が正しく分離されているかを目視確認するための一時的なコード。
  * 本幹は白の太線、側枝は枝ごとに色を変えた細線で表示する。
  */
@@ -83,7 +83,7 @@ function CenterlineDebugOverlay({ vesselId }: { vesselId: VesselId }) {
 }
 
 /**
- * ノードクリックで選んだ位置を、病変の(branchId, position)へ変換する。
+ * ノードクリックで選んだ位置を、オブジェクトの(branchId, position)へ変換する。
  * 根(起始部)なら本幹のt=0。それ以外は、そのノードを端点に持つ枝のうち本幹を優先し
  * (本幹上の分岐点ならそのまま本幹上の位置として扱う)、無ければ最初に見つかった側枝を使う。
  * 側枝の場合、そのノードが枝の近位端(startNodeId)ならt=0、遠位端(endNodeId)ならt=1になる。
@@ -102,7 +102,7 @@ const NODE_MARKER_COLOR = "#4fd7ff";
 const NODE_MARKER_HOVER_COLOR = "#ffee00";
 
 /**
- * 病変追加/位置変更モード中だけ表示する、中心線グラフのノード(起始部・分岐点・端点)の
+ * オブジェクト追加/位置変更モード中だけ表示する、中心線グラフのノード(起始部・分岐点・端点)の
  * クリック可能なマーカー。画面が常時うるさくならないよう、呼び出し側でモード中のみ描画する。
  */
 function NodeMarkers({
@@ -157,7 +157,7 @@ function NodeMarkers({
       })}
       {hoveredNode && hoveredLabel && (
         <Html position={hoveredNode.position} style={{ pointerEvents: "none" }}>
-          <div className="lesion-node-tooltip">{hoveredLabel} 分岐部</div>
+          <div className="object-node-tooltip">{hoveredLabel} 分岐部</div>
         </Html>
       )}
     </>
@@ -170,25 +170,25 @@ function NodeMarkers({
  * segmentMode が有効な場合は主幹メッシュ(RCA/LAD/LCX)を隠し、代わりに
  * 幹の長さ方向で機械的に分割したセグメントメッシュを個別に描画する。
  *
- * Phase 6: 血管ごとに中心線を抽出し、狭窄(stenosis)病変があれば断面半径を
+ * Phase 6: 血管ごとに中心線を抽出し、狭窄(stenosis)オブジェクトがあれば断面半径を
  * ガウス関数的に絞った変形済みジオメトリに差し替える(狭窄が無ければ元の
- * ジオメトリをそのまま使う)。石灰化・ステントは LesionMeshes が別メッシュとして
- * 重ねて描画する。3Dビュー上で血管をクリックすると、その位置を
- * store.pendingLesionPosition に記録し、LesionPanel の追加フォームに引き渡す。
+ * ジオメトリをそのまま使う)。石灰化・ステントは ObjectMeshes が別メッシュとして
+ * 重ねて描画する。3Dビュー上でノードをクリックすると、その位置を
+ * store.pendingObjectPosition に記録し、ObjectPanel の追加フォームに引き渡す。
  */
 function GltfAnatomyModels({ url }: { url: string }) {
   const { scene } = useGLTF(url);
   const heart = useCardioStore((s) => s.heart);
   const vessels = useCardioStore((s) => s.vessels);
   const segmentMode = useCardioStore((s) => s.segmentMode);
-  const lesions = useCardioStore((s) => s.lesions);
-  const setPendingLesionPosition = useCardioStore((s) => s.setPendingLesionPosition);
-  const previewLesion = useCardioStore((s) => s.previewLesion);
-  const editingLesionId = useCardioStore((s) => s.editingLesionId);
-  const setEditingLesionId = useCardioStore((s) => s.setEditingLesionId);
-  const updateLesion = useCardioStore((s) => s.updateLesion);
-  const pickingLesionVessel = useCardioStore((s) => s.pickingLesionVessel);
-  const setPickingLesionVessel = useCardioStore((s) => s.setPickingLesionVessel);
+  const objects = useCardioStore((s) => s.objects);
+  const setPendingObjectPosition = useCardioStore((s) => s.setPendingObjectPosition);
+  const previewObject = useCardioStore((s) => s.previewObject);
+  const editingObjectId = useCardioStore((s) => s.editingObjectId);
+  const setEditingObjectId = useCardioStore((s) => s.setEditingObjectId);
+  const updateObject = useCardioStore((s) => s.updateObject);
+  const pickingObjectVessel = useCardioStore((s) => s.pickingObjectVessel);
+  const setPickingObjectVessel = useCardioStore((s) => s.setPickingObjectVessel);
   const [hovered, setHovered] = useState<{ id: string; point: Vector3 } | null>(null);
 
   const meshesByName = useMemo(() => {
@@ -209,7 +209,7 @@ function GltfAnatomyModels({ url }: { url: string }) {
     return result;
   }, []);
 
-  // 狭窄病変に基づく変形済みジオメトリ。病変が無い血管は applyStenosisDeformation が
+  // 狭窄オブジェクトに基づく変形済みジオメトリ。オブジェクトが無い血管は applyStenosisDeformation が
   // 元のジオメトリ参照をそのまま返すため、以降の処理でも「変形なし」を安全に判定できる。
   const deformedGeometries = useMemo(() => {
     const result = new Map<VesselId, BufferGeometry>();
@@ -217,13 +217,13 @@ function GltfAnatomyModels({ url }: { url: string }) {
       const mesh = meshesByName.get(id);
       const graph = graphs.get(id);
       if (!mesh || !graph) continue;
-      const stenoses = getLesionsForVessel(lesions, id).filter(
-        (l): l is StenosisLesion => l.type === "stenosis",
+      const stenoses = getObjectsForVessel(objects, id).filter(
+        (o): o is StenosisObject => o.type === "stenosis",
       );
       result.set(id, applyStenosisDeformation(mesh.geometry, graph, stenoses));
     }
     return result;
-  }, [meshesByName, graphs, lesions]);
+  }, [meshesByName, graphs, objects]);
 
   useEffect(() => {
     applyDisplayState(meshesByName.get("HEART"), heart);
@@ -256,55 +256,55 @@ function GltfAnatomyModels({ url }: { url: string }) {
   }, [meshesByName, deformedGeometries]);
 
   /**
-   * ノードマーカーのクリックを、新規追加フォームへの位置事前入力(pendingLesionPosition)、
-   * または編集中の既存病変(editingLesionId)の位置更新のどちらかに振り分ける。
-   * 編集モード中は、クリック1回で即座にその病変の位置を更新し編集モードを終了する
+   * ノードマーカーのクリックを、新規追加フォームへの位置事前入力(pendingObjectPosition)、
+   * または編集中の既存オブジェクト(editingObjectId)の位置更新のどちらかに振り分ける。
+   * 編集モード中は、クリック1回で即座にそのオブジェクトの位置を更新し編集モードを終了する
    * (「クリックし直して位置を変更」という単発操作として設計)。
    */
   function handleNodeSelect(vesselId: VesselId, nodeId: string) {
     const graph = graphs.get(vesselId);
     if (!graph) return;
     const { branchId, position } = resolveNodeSelection(graph, nodeId);
-    if (editingLesionId) {
-      updateLesion(editingLesionId, { vesselId, branchId, position });
-      setEditingLesionId(null);
+    if (editingObjectId) {
+      updateObject(editingObjectId, { vesselId, branchId, position });
+      setEditingObjectId(null);
     } else {
-      setPendingLesionPosition({ vesselId, branchId, position });
-      setPickingLesionVessel(null);
+      setPendingObjectPosition({ vesselId, branchId, position });
+      setPickingObjectVessel(null);
     }
   }
 
   // ノードマーカーを表示する血管: 新規追加のため明示的に選択開始した血管、または
-  // 既存病変を位置変更中の場合はその病変の血管(画面が常時うるさくならないよう、
+  // 既存オブジェクトを位置変更中の場合はそのオブジェクトの血管(画面が常時うるさくならないよう、
   // どちらでもない間はマーカーを一切表示しない)。
-  const editingLesion = editingLesionId ? lesions.find((l) => l.id === editingLesionId) : undefined;
-  const nodePickerVesselId = pickingLesionVessel ?? editingLesion?.vesselId ?? null;
+  const editingObject = editingObjectId ? objects.find((o) => o.id === editingObjectId) : undefined;
+  const nodePickerVesselId = pickingObjectVessel ?? editingObject?.vesselId ?? null;
 
   /**
-   * 病変追加フォームで位置・長さを微調整している間の配置プレビュー(簡易円筒)。
-   * まだstore.lesionsに登録されていない下書き状態を、実際のステント生成ロジック
+   * オブジェクト追加フォームで位置・長さを微調整している間の配置プレビュー(簡易円筒)。
+   * まだstore.objectsに登録されていない下書き状態を、実際のステント生成ロジック
    * (buildStentGeometry、中心線の中央値半径ベースで一様な円筒になる)を使って
-   * その場で組み立てる。病変タイプによらず同じ簡易円筒で表示する(見た目の作り込みは
+   * その場で組み立てる。オブジェクトの種類によらず同じ簡易円筒で表示する(見た目の作り込みは
    * 「確定」後の本描画に任せる)。
    */
   const previewGeometry = useMemo(() => {
-    if (!previewLesion) return null;
-    const graph = graphs.get(previewLesion.vesselId);
-    const branch = graph && getBranch(graph, previewLesion.branchId);
+    if (!previewObject) return null;
+    const graph = graphs.get(previewObject.vesselId);
+    const branch = graph && getBranch(graph, previewObject.branchId);
     if (!branch) return null;
-    const fakeStent: StentLesion = {
+    const fakeStent: StentObject = {
       id: "preview",
       type: "stent",
-      vesselId: previewLesion.vesselId,
-      branchId: previewLesion.branchId,
-      position: previewLesion.position,
-      length: previewLesion.length,
+      vesselId: previewObject.vesselId,
+      branchId: previewObject.branchId,
+      position: previewObject.position,
+      length: previewObject.length,
       diameter: 3.0,
       visible: true,
     };
     return buildStentGeometry(branch.points, fakeStent);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graphs, previewLesion?.vesselId, previewLesion?.branchId, previewLesion?.position, previewLesion?.length]);
+  }, [graphs, previewObject?.vesselId, previewObject?.branchId, previewObject?.position, previewObject?.length]);
 
   return (
     <HeartbeatGroup>
@@ -397,7 +397,7 @@ function GltfAnatomyModels({ url }: { url: string }) {
       {VESSEL_IDS.map((id) => {
         const graph = graphs.get(id);
         if (!graph || !vessels[id]?.visible) return null;
-        return <LesionMeshes key={id} vesselId={id} graph={graph} lesions={lesions} />;
+        return <ObjectMeshes key={id} vesselId={id} graph={graph} objects={objects} />;
       })}
 
       {DEBUG_SHOW_CENTERLINES &&
@@ -416,7 +416,7 @@ function GltfAnatomyModels({ url }: { url: string }) {
           />
         )}
 
-      {previewGeometry && previewLesion && vessels[previewLesion.vesselId]?.visible && (
+      {previewGeometry && previewObject && vessels[previewObject.vesselId]?.visible && (
         <mesh geometry={previewGeometry}>
           <meshStandardMaterial color="#4fd7ff" transparent opacity={0.5} metalness={0} roughness={0.6} />
         </mesh>

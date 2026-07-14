@@ -1,4 +1,5 @@
 import { useCardioStore } from "../../store/useCardioStore";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 function opacityToPercent(opacity: number) {
   return Math.round(opacity * 100);
@@ -21,8 +22,8 @@ export function AnatomyLegend() {
   const vesselList = Object.values(vessels);
 
   return (
-    <section className="panel-section">
-      <h2>心臓</h2>
+    <CollapsibleSection title="解剖 (心臓・冠動脈)" defaultOpen>
+      <h3 className="panel-subheading">心臓</h3>
       <div className="anatomy-item">
         <label className="anatomy-item-header">
           <input
@@ -46,7 +47,7 @@ export function AnatomyLegend() {
         </label>
       </div>
 
-      <h2>冠動脈</h2>
+      <h3 className="panel-subheading">冠動脈</h3>
       <label className="segment-mode-toggle">
         <input type="checkbox" checked={segmentMode} onChange={toggleSegmentMode} />
         セグメント単位で色分け(β)
@@ -91,6 +92,6 @@ export function AnatomyLegend() {
       <button type="button" className="reset-display-button" onClick={resetDisplayDefaults}>
         色・不透明度をリセット
       </button>
-    </section>
+    </CollapsibleSection>
   );
 }

@@ -1,12 +1,12 @@
-// 血管上に疑似配置する病変(狭窄・石灰化プラーク・ステント)のデータ構造。
-// Phase 7(造影剤フロー)・Phase 8(心筋灌流)から参照しやすいよう、
+// 血管上に疑似配置するオブジェクト(狭窄・石灰化プラーク・ステント等の治療デバイス/病変所見)の
+// データ構造。Phase 7(造影剤フロー)・Phase 8(心筋灌流)から参照しやすいよう、
 // store に依存しない純粋関数としてセレクタも一緒に定義している。
 
 import type { VesselId } from "./anatomy";
 
-export type LesionType = "stenosis" | "calcification" | "stent";
+export type ObjectType = "stenosis" | "calcification" | "stent";
 
-interface LesionBase {
+interface ObjectBase {
   id: string;
   vesselId: VesselId;
   /**
@@ -21,7 +21,7 @@ interface LesionBase {
    */
   position: number;
   /**
-   * 病変の中心線方向の長さ(血管全長に対する比率、0〜1)。
+   * オブジェクトの中心線方向の長さ(血管全長に対する比率、0〜1)。
    * 実際に効果が及ぶ範囲は [position - length/2, position + length/2] (0〜1にクランプ)。
    */
   length: number;
@@ -29,53 +29,53 @@ interface LesionBase {
   visible: boolean;
 }
 
-export interface StenosisLesion extends LesionBase {
+export interface StenosisObject extends ObjectBase {
   type: "stenosis";
   /** 狭窄率(%)。0〜99。 */
   severity: number;
 }
 
-export interface CalcificationLesion extends LesionBase {
+export interface CalcificationObject extends ObjectBase {
   type: "calcification";
   /** 石灰化の厚み/密度の強さ。0〜100目安。 */
   severity: number;
 }
 
-export interface StentLesion extends LesionBase {
+export interface StentObject extends ObjectBase {
   type: "stent";
   /** ステント公称径(mm相当、UI表示・ラティス半径計算用)。 */
   diameter: number;
 }
 
-export type Lesion = StenosisLesion | CalcificationLesion | StentLesion;
+export type CardioObject = StenosisObject | CalcificationObject | StentObject;
 
 /**
- * store.updateLesion の patch 用の型。`Partial<Lesion>` はユニオン型の共通キー
+ * store.updateObject の patch 用の型。`Partial<CardioObject>` はユニオン型の共通キー
  * (id/vesselId/position/length/visible/type)しか許容しないため、severity/diameter
  * のような型ごとに異なるフィールドを部分更新できるよう、type を除いて各バリアントを
  * intersectionしたものを Partial 化している。
  */
-export type LesionPatch = Partial<Omit<StenosisLesion, "type">> &
-  Partial<Omit<CalcificationLesion, "type">> &
-  Partial<Omit<StentLesion, "type">>;
+export type ObjectPatch = Partial<Omit<StenosisObject, "type">> &
+  Partial<Omit<CalcificationObject, "type">> &
+  Partial<Omit<StentObject, "type">>;
 
 /**
- * store.addLesion の引数用の型。`Omit<Lesion, "id">` はユニオン型の共通キーしか
+ * store.addObject の引数用の型。`Omit<CardioObject, "id">` はユニオン型の共通キーしか
  * 残さず severity/diameter が消えてしまうため、各バリアントを個別にOmitしてから
  * unionし直したもの。
  */
-export type NewLesionInput =
-  | Omit<StenosisLesion, "id">
-  | Omit<CalcificationLesion, "id">
-  | Omit<StentLesion, "id">;
+export type NewObjectInput =
+  | Omit<StenosisObject, "id">
+  | Omit<CalcificationObject, "id">
+  | Omit<StentObject, "id">;
 
-export function getLesionsForVessel(lesions: Lesion[], vesselId: VesselId): Lesion[] {
-  return lesions.filter((lesion) => lesion.vesselId === vesselId);
+export function getObjectsForVessel(objects: CardioObject[], vesselId: VesselId): CardioObject[] {
+  return objects.filter((object) => object.vesselId === vesselId);
 }
 
-function lesionCoversT(lesion: Lesion, t: number): boolean {
-  const half = lesion.length / 2;
-  return t >= lesion.position - half && t <= lesion.position + half;
+function objectCoversT(object: CardioObject, t: number): boolean {
+  const half = object.length / 2;
+  return t >= object.position - half && t <= object.position + half;
 }
 
 /**
@@ -84,17 +84,17 @@ function lesionCoversT(lesion: Lesion, t: number): boolean {
  * しながらこの関数を呼ぶ想定。
  */
 export function getStenosisSeverityAt(
-  lesions: Lesion[],
+  objects: CardioObject[],
   vesselId: VesselId,
   branchId: string,
   t: number,
 ): number {
   let max = 0;
-  for (const lesion of lesions) {
-    if (lesion.type !== "stenosis" || lesion.vesselId !== vesselId || lesion.branchId !== branchId) continue;
-    if (!lesion.visible) continue;
-    if (!lesionCoversT(lesion, t)) continue;
-    if (lesion.severity > max) max = lesion.severity;
+  for (const object of objects) {
+    if (object.type !== "stenosis" || object.vesselId !== vesselId || object.branchId !== branchId) continue;
+    if (!object.visible) continue;
+    if (!objectCoversT(object, t)) continue;
+    if (object.severity > max) max = object.severity;
   }
   return max;
 }
@@ -103,11 +103,11 @@ export function getStenosisSeverityAt(
  * 血管全体で最も重症な狭窄率。Phase 8の「高度狭窄があればその先の灌流領域を
  * 虚血として強調する」表現で、血管単位の重症度判定に使う想定。
  */
-export function getMaxStenosisSeverity(lesions: Lesion[], vesselId: VesselId): number {
+export function getMaxStenosisSeverity(objects: CardioObject[], vesselId: VesselId): number {
   let max = 0;
-  for (const lesion of lesions) {
-    if (lesion.type !== "stenosis" || lesion.vesselId !== vesselId || !lesion.visible) continue;
-    if (lesion.severity > max) max = lesion.severity;
+  for (const object of objects) {
+    if (object.type !== "stenosis" || object.vesselId !== vesselId || !object.visible) continue;
+    if (object.severity > max) max = object.severity;
   }
   return max;
 }

@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { useCardioStore } from "../../store/useCardioStore";
 import type { VesselId } from "../../types/anatomy";
-import type { Lesion, LesionType } from "../../types/lesion";
+import type { CardioObject, ObjectType } from "../../types/object";
 import type { CenterlineBranch, VesselGraph } from "../models/vesselGraph";
 import { getBranch, getBranchesAtNode, getVesselGraph } from "../models/vesselGraph";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 const VESSEL_IDS: VesselId[] = ["RCA", "LAD", "LCX"];
 const VESSEL_LABELS: Record<VesselId, string> = { RCA: "RCA", LAD: "LAD", LCX: "LCX" };
-const TYPE_LABELS: Record<LesionType, string> = {
+const TYPE_LABELS: Record<ObjectType, string> = {
   stenosis: "狭窄",
   calcification: "石灰化",
   stent: "ステント",
 };
-const TYPE_ICONS: Record<LesionType, string> = {
+const TYPE_ICONS: Record<ObjectType, string> = {
   stenosis: "⏳",
   calcification: "◆",
   stent: "▦",
@@ -73,29 +74,29 @@ function findForkOnNudge(
 }
 
 /**
- * Phase 6: 血管上に疑似配置する病変(狭窄・石灰化・ステント)の追加フォームと一覧。
+ * Phase 6: 血管上に疑似配置するオブジェクト(狭窄・石灰化・ステント等)の追加フォームと一覧。
  *
  * 配置フロー: 「位置を選択」ボタンで3Dビュー上に中心線グラフのノード(起始部・分岐点・
  * 端点)をクリック可能なマーカーとして表示させ、ユーザーがいずれかをクリックすると
  * その枝(本幹/側枝)と位置が確定する。以後は「近位側/遠位側」ボタンでその枝に沿って
  * 位置を微調整でき、枝の端(次の分岐点)に達すると分岐先の候補を選ぶボタンが現れる。
- * 位置が決まったらプレビュー(半透明の簡易円筒、store.previewLesion経由でModelLoaderが
- * 描画)で確認し、「病変を追加」で確定する。
+ * 位置が決まったらプレビュー(半透明の簡易円筒、store.previewObject経由でModelLoaderが
+ * 描画)で確認し、「オブジェクトを追加」で確定する。
  */
-export function LesionPanel() {
-  const lesions = useCardioStore((s) => s.lesions);
-  const addLesion = useCardioStore((s) => s.addLesion);
-  const updateLesion = useCardioStore((s) => s.updateLesion);
-  const removeLesion = useCardioStore((s) => s.removeLesion);
-  const pendingLesionPosition = useCardioStore((s) => s.pendingLesionPosition);
-  const setPendingLesionPosition = useCardioStore((s) => s.setPendingLesionPosition);
-  const setPreviewLesion = useCardioStore((s) => s.setPreviewLesion);
-  const editingLesionId = useCardioStore((s) => s.editingLesionId);
-  const setEditingLesionId = useCardioStore((s) => s.setEditingLesionId);
-  const pickingLesionVessel = useCardioStore((s) => s.pickingLesionVessel);
-  const setPickingLesionVessel = useCardioStore((s) => s.setPickingLesionVessel);
+export function ObjectPanel() {
+  const objects = useCardioStore((s) => s.objects);
+  const addObject = useCardioStore((s) => s.addObject);
+  const updateObject = useCardioStore((s) => s.updateObject);
+  const removeObject = useCardioStore((s) => s.removeObject);
+  const pendingObjectPosition = useCardioStore((s) => s.pendingObjectPosition);
+  const setPendingObjectPosition = useCardioStore((s) => s.setPendingObjectPosition);
+  const setPreviewObject = useCardioStore((s) => s.setPreviewObject);
+  const editingObjectId = useCardioStore((s) => s.editingObjectId);
+  const setEditingObjectId = useCardioStore((s) => s.setEditingObjectId);
+  const pickingObjectVessel = useCardioStore((s) => s.pickingObjectVessel);
+  const setPickingObjectVessel = useCardioStore((s) => s.setPickingObjectVessel);
 
-  const [type, setType] = useState<LesionType>("stenosis");
+  const [type, setType] = useState<ObjectType>("stenosis");
   const [vesselId, setVesselId] = useState<VesselId>("RCA");
   const [branchId, setBranchId] = useState<string | null>(null);
   const [positionPercent, setPositionPercent] = useState(50);
@@ -109,39 +110,39 @@ export function LesionPanel() {
 
   // 3Dビューでノードをクリックして位置が渡されたら、フォームへ事前入力する。
   useEffect(() => {
-    if (!pendingLesionPosition) return;
-    setVesselId(pendingLesionPosition.vesselId);
-    setBranchId(pendingLesionPosition.branchId);
-    setPositionPercent(Math.round(pendingLesionPosition.position * 100));
+    if (!pendingObjectPosition) return;
+    setVesselId(pendingObjectPosition.vesselId);
+    setBranchId(pendingObjectPosition.branchId);
+    setPositionPercent(Math.round(pendingObjectPosition.position * 100));
     setForkChoice(null);
-  }, [pendingLesionPosition]);
+  }, [pendingObjectPosition]);
 
   // 枝が決まっている間、3Dビューにライブプレビュー(簡易円筒)を表示する。
   // まだ枝が決まっていない(ノードを選んでいない)間はプレビューを出さない。
   useEffect(() => {
     if (!branchId) {
-      setPreviewLesion(null);
+      setPreviewObject(null);
       return;
     }
-    setPreviewLesion({
+    setPreviewObject({
       vesselId,
       branchId,
       position: positionPercent / 100,
       length: Math.max(lengthPercent, 1) / 100,
     });
-    return () => setPreviewLesion(null);
-  }, [vesselId, branchId, positionPercent, lengthPercent, setPreviewLesion]);
+    return () => setPreviewObject(null);
+  }, [vesselId, branchId, positionPercent, lengthPercent, setPreviewObject]);
 
   function handleVesselChange(next: VesselId) {
     setVesselId(next);
     setBranchId(null);
     setForkChoice(null);
-    if (pickingLesionVessel) setPickingLesionVessel(next);
+    if (pickingObjectVessel) setPickingObjectVessel(next);
   }
 
   function startPicking() {
     setForkChoice(null);
-    setPickingLesionVessel(vesselId);
+    setPickingObjectVessel(vesselId);
   }
 
   function nudgePosition(delta: number) {
@@ -171,36 +172,36 @@ export function LesionPanel() {
       visible: true,
     };
     if (type === "stenosis") {
-      addLesion({ ...base, type: "stenosis", severity });
+      addObject({ ...base, type: "stenosis", severity });
     } else if (type === "calcification") {
-      addLesion({ ...base, type: "calcification", severity });
+      addObject({ ...base, type: "calcification", severity });
     } else {
-      addLesion({ ...base, type: "stent", diameter });
+      addObject({ ...base, type: "stent", diameter });
     }
-    setPendingLesionPosition(null);
+    setPendingObjectPosition(null);
     setBranchId(null);
     setForkChoice(null);
   }
 
   return (
-    <section className="panel-section">
-      <h2>病変(β)</h2>
+    <CollapsibleSection title="オブジェクト(β)" defaultOpen>
+      <h3 className="panel-subheading">追加</h3>
       <p className="panel-note">
         「位置を選択」ボタンで3Dビュー上にノード(分岐点・端点)を表示し、いずれかを
         クリックして起点を決めてください。決まったら下のボタンで枝に沿って微調整し、
-        プレビュー(水色の半透明な円筒)で確認してから「病変を追加」で確定します。
+        プレビュー(水色の半透明な円筒)で確認してから「オブジェクトを追加」で確定します。
       </p>
 
-      <div className="lesion-form">
-        <label className="lesion-form-row">
+      <div className="object-form">
+        <label className="object-form-row">
           種類
-          <select value={type} onChange={(e) => setType(e.target.value as LesionType)}>
+          <select value={type} onChange={(e) => setType(e.target.value as ObjectType)}>
             <option value="stenosis">狭窄</option>
             <option value="calcification">石灰化プラーク</option>
             <option value="stent">ステント</option>
           </select>
         </label>
-        <label className="lesion-form-row">
+        <label className="object-form-row">
           対象血管
           <select value={vesselId} onChange={(e) => handleVesselChange(e.target.value as VesselId)}>
             {VESSEL_IDS.map((id) => (
@@ -213,19 +214,19 @@ export function LesionPanel() {
 
         {!branchId && (
           <>
-            <p className="panel-note lesion-click-hint">
+            <p className="panel-note object-click-hint">
               👉 「位置を選択」を押してから、3Dビューで{VESSEL_LABELS[vesselId]}のノードをクリックしてください。
             </p>
             <button type="button" onClick={startPicking}>
-              {pickingLesionVessel === vesselId ? "🎯 ノードをクリックしてください…" : "📍 位置を選択"}
+              {pickingObjectVessel === vesselId ? "🎯 ノードをクリックしてください…" : "📍 位置を選択"}
             </button>
           </>
         )}
 
         {branchId && currentBranch && !forkChoice && (
           <>
-            <p className="panel-note lesion-segment-hint">枝: {currentBranch.label}</p>
-            <div className="lesion-fine-tune-row">
+            <p className="panel-note object-segment-hint">枝: {currentBranch.label}</p>
+            <div className="object-fine-tune-row">
               <button type="button" onClick={() => nudgePosition(-FINE_TUNE_STEP_PERCENT)}>
                 ◀ 近位側へ
               </button>
@@ -241,7 +242,7 @@ export function LesionPanel() {
         )}
 
         {forkChoice && (
-          <div className="lesion-fork-choice">
+          <div className="object-fork-choice">
             <p className="panel-note">分岐点です。進む先を選んでください:</p>
             {forkChoice.options.map((option) => (
               <button key={option.id} type="button" onClick={() => chooseFork(option)}>
@@ -251,7 +252,7 @@ export function LesionPanel() {
           </div>
         )}
 
-        <label className="lesion-form-row">
+        <label className="object-form-row">
           長さ(血管全長比)
           <input
             type="range"
@@ -264,7 +265,7 @@ export function LesionPanel() {
           <span className="opacity-value">{lengthPercent}%</span>
         </label>
         {(type === "stenosis" || type === "calcification") && (
-          <label className="lesion-form-row">
+          <label className="object-form-row">
             {type === "stenosis" ? "狭窄率" : "石灰化の強さ"}
             <input
               type="range"
@@ -278,7 +279,7 @@ export function LesionPanel() {
           </label>
         )}
         {type === "stent" && (
-          <label className="lesion-form-row">
+          <label className="object-form-row">
             公称径(mm目安)
             <input
               type="number"
@@ -291,60 +292,65 @@ export function LesionPanel() {
           </label>
         )}
         <button type="button" onClick={handleAdd} disabled={!branchId}>
-          病変を追加
+          オブジェクトを追加
         </button>
       </div>
 
-      {lesions.length > 0 && (
-        <ul className="lesion-list">
-          {lesions.map((lesion) => (
-            <LesionListItem
-              key={lesion.id}
-              lesion={lesion}
-              isEditing={editingLesionId === lesion.id}
-              onUpdate={(patch) => updateLesion(lesion.id, patch)}
-              onRemove={() => {
-                if (editingLesionId === lesion.id) setEditingLesionId(null);
-                removeLesion(lesion.id);
-              }}
-              onStartReposition={() => setEditingLesionId(lesion.id)}
-              onCancelReposition={() => setEditingLesionId(null)}
-            />
-          ))}
-        </ul>
+      {objects.length > 0 && (
+        <>
+          <hr className="panel-divider" />
+          <h3 className="panel-subheading">登録済み ({objects.length})</h3>
+          <ul className="object-list">
+            {objects.map((object) => (
+              <ObjectListItem
+                key={object.id}
+                object={object}
+                isEditing={editingObjectId === object.id}
+                onUpdate={(patch) => updateObject(object.id, patch)}
+                onRemove={() => {
+                  if (editingObjectId === object.id) setEditingObjectId(null);
+                  removeObject(object.id);
+                }}
+                onStartReposition={() => setEditingObjectId(object.id)}
+                onCancelReposition={() => setEditingObjectId(null)}
+              />
+            ))}
+          </ul>
+        </>
       )}
-    </section>
+    </CollapsibleSection>
   );
 }
 
-function LesionListItem({
-  lesion,
+function ObjectListItem({
+  object,
   isEditing,
   onUpdate,
   onRemove,
   onStartReposition,
   onCancelReposition,
 }: {
-  lesion: Lesion;
+  object: CardioObject;
   isEditing: boolean;
-  onUpdate: (patch: Partial<Lesion>) => void;
+  onUpdate: (patch: Partial<CardioObject>) => void;
   onRemove: () => void;
   onStartReposition: () => void;
   onCancelReposition: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const [forkChoice, setForkChoice] = useState<ForkChoice | null>(null);
-  const graph = useMemo(() => getVesselGraph(lesion.vesselId), [lesion.vesselId]);
-  const branch = getBranch(graph, lesion.branchId);
+  const graph = useMemo(() => getVesselGraph(object.vesselId), [object.vesselId]);
+  const branch = getBranch(graph, object.branchId);
 
   function nudge(delta: number) {
     if (!branch) return;
-    const fork = findForkOnNudge(graph, branch, lesion.position * 100, delta);
+    const fork = findForkOnNudge(graph, branch, object.position * 100, delta);
     if (fork) {
       onUpdate({ position: fork.snapPercent / 100 });
       setForkChoice(fork);
       return;
     }
-    onUpdate({ position: Math.min(1, Math.max(0, (lesion.position * 100 + delta) / 100)) });
+    onUpdate({ position: Math.min(1, Math.max(0, (object.position * 100 + delta) / 100)) });
   }
 
   function chooseFork(nextBranch: CenterlineBranch) {
@@ -353,87 +359,119 @@ function LesionListItem({
   }
 
   return (
-    <li className={`lesion-item${isEditing ? " lesion-item-editing" : ""}`}>
-      <div className="lesion-item-header">
-        <span className="lesion-type-icon" aria-hidden="true">
-          {TYPE_ICONS[lesion.type]}
+    <li className={`object-item${isEditing ? " object-item-editing" : ""}`}>
+      <div className="object-item-summary" onClick={() => setExpanded((v) => !v)}>
+        <span className="object-item-chevron" aria-hidden="true">
+          {expanded ? "▼" : "▶"}
         </span>
-        <span className="lesion-item-title">
-          {VESSEL_LABELS[lesion.vesselId]} - {TYPE_LABELS[lesion.type]}
+        <span className="object-type-icon" aria-hidden="true">
+          {TYPE_ICONS[object.type]}
         </span>
-        <label className="lesion-visible-toggle">
+        <span className="object-item-title">
+          {VESSEL_LABELS[object.vesselId]} - {TYPE_LABELS[object.type]}
+        </span>
+        <span className="object-position-display">
+          {branch?.label ?? object.branchId} {Math.round(object.position * 100)}%
+        </span>
+        <label className="object-visible-toggle" onClick={(e) => e.stopPropagation()}>
           <input
             type="checkbox"
-            checked={lesion.visible}
+            checked={object.visible}
             onChange={(e) => onUpdate({ visible: e.target.checked })}
           />
           表示
         </label>
-        <button type="button" className="lesion-remove-button" onClick={onRemove} aria-label="削除">
+        <button
+          type="button"
+          className="object-remove-button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+          aria-label="削除"
+        >
           削除
         </button>
       </div>
-      <div className="lesion-item-controls">
-        <span className="lesion-position-display">
-          {branch?.label ?? lesion.branchId} 位置 {Math.round(lesion.position * 100)}%
-        </span>
-        <button type="button" onClick={() => nudge(-FINE_TUNE_STEP_PERCENT)} aria-label="近位側へ">
-          ◀
-        </button>
-        <button type="button" onClick={() => nudge(FINE_TUNE_STEP_PERCENT)} aria-label="遠位側へ">
-          ▶
-        </button>
-        {isEditing ? (
-          <button type="button" onClick={onCancelReposition}>
-            キャンセル
-          </button>
-        ) : (
-          <button type="button" onClick={onStartReposition}>
-            🎯 位置を変更
-          </button>
-        )}
-        {(lesion.type === "stenosis" || lesion.type === "calcification") && (
-          <label>
-            重症度
-            <input
-              type="number"
-              min={0}
-              max={lesion.type === "stenosis" ? 99 : 100}
-              value={lesion.severity}
-              onChange={(e) => onUpdate({ severity: Number(e.target.value) })}
-            />
-            %
-          </label>
-        )}
-        {lesion.type === "stent" && (
-          <label>
-            径
-            <input
-              type="number"
-              min={1}
-              max={6}
-              step={0.25}
-              value={lesion.diameter}
-              onChange={(e) => onUpdate({ diameter: Number(e.target.value) })}
-            />
-            mm
-          </label>
-        )}
-      </div>
-      {forkChoice && (
-        <div className="lesion-fork-choice">
-          <p className="panel-note">分岐点です。進む先を選んでください:</p>
-          {forkChoice.options.map((option) => (
-            <button key={option.id} type="button" onClick={() => chooseFork(option)}>
-              {option.label}
+
+      {expanded && (
+        <div className="object-item-details">
+          <div className="object-item-controls">
+            <button type="button" onClick={() => nudge(-FINE_TUNE_STEP_PERCENT)} aria-label="近位側へ">
+              ◀
             </button>
-          ))}
+            <button type="button" onClick={() => nudge(FINE_TUNE_STEP_PERCENT)} aria-label="遠位側へ">
+              ▶
+            </button>
+            {isEditing ? (
+              <button type="button" onClick={onCancelReposition}>
+                キャンセル
+              </button>
+            ) : (
+              <button type="button" onClick={onStartReposition}>
+                🎯 位置を変更
+              </button>
+            )}
+          </div>
+
+          <label className="object-item-size-row">
+            長さ
+            <input
+              type="range"
+              min={2}
+              max={30}
+              step={1}
+              value={Math.round(object.length * 100)}
+              onChange={(e) => onUpdate({ length: Number(e.target.value) / 100 })}
+            />
+            <span className="opacity-value">{Math.round(object.length * 100)}%</span>
+          </label>
+
+          {(object.type === "stenosis" || object.type === "calcification") && (
+            <label className="object-item-size-row">
+              重症度
+              <input
+                type="range"
+                min={0}
+                max={object.type === "stenosis" ? 99 : 100}
+                step={1}
+                value={object.severity}
+                onChange={(e) => onUpdate({ severity: Number(e.target.value) })}
+              />
+              <span className="opacity-value">{object.severity}%</span>
+            </label>
+          )}
+          {object.type === "stent" && (
+            <label className="object-item-size-row">
+              径
+              <input
+                type="number"
+                min={1}
+                max={6}
+                step={0.25}
+                value={object.diameter}
+                onChange={(e) => onUpdate({ diameter: Number(e.target.value) })}
+              />
+              mm
+            </label>
+          )}
+
+          {forkChoice && (
+            <div className="object-fork-choice">
+              <p className="panel-note">分岐点です。進む先を選んでください:</p>
+              {forkChoice.options.map((option) => (
+                <button key={option.id} type="button" onClick={() => chooseFork(option)}>
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {isEditing && (
+            <p className="panel-note object-click-hint">
+              👉 3Dビューで{VESSEL_LABELS[object.vesselId]}のノードをクリックして新しい位置を指定してください。
+            </p>
+          )}
         </div>
-      )}
-      {isEditing && (
-        <p className="panel-note lesion-click-hint">
-          👉 3Dビューで{VESSEL_LABELS[lesion.vesselId]}のノードをクリックして新しい位置を指定してください。
-        </p>
       )}
     </li>
   );

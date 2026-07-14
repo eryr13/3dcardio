@@ -30,13 +30,13 @@ const PEEL_RESOLUTION = 512;
 const HEART_ABSORPTION = 6.0;
 
 /**
- * Phase 6: 石灰化・ステント病変のリアルX線密度表現に使う固定スロット数。
+ * Phase 6: 石灰化・ステントオブジェクトのリアルX線密度表現に使う固定スロット数。
  * WebGL1/GLSL ES 1.00 のuniform配列は動的インデックスアクセスに制約があるため、
  * 血管(uFront0..2)・心臓と同じ「番号付きuniformを明示的に並べる」方式を踏襲し、
- * 配列ではなく固定本数のuniformセットにしている。7個目以降の病変は密度表現の対象外
+ * 配列ではなく固定本数のuniformセットにしている。7個目以降のオブジェクトは密度表現の対象外
  * (狭窄によるジオメトリ変形自体はスロット数と無関係に常に反映される)。
  */
-const LESION_SLOT_COUNT = 6;
+const OBJECT_SLOT_COUNT = 6;
 
 const DEPTH_VERTEX_SHADER = /* glsl */ `
 attribute float aProximity;
@@ -92,12 +92,12 @@ uniform float uHeartIntensity;
 uniform float uHeartBlurRadius;
 uniform vec2 uHeartOffset;
 
-uniform sampler2D uLesion0Front; uniform sampler2D uLesion0Back; uniform float uLesion0Absorption;
-uniform sampler2D uLesion1Front; uniform sampler2D uLesion1Back; uniform float uLesion1Absorption;
-uniform sampler2D uLesion2Front; uniform sampler2D uLesion2Back; uniform float uLesion2Absorption;
-uniform sampler2D uLesion3Front; uniform sampler2D uLesion3Back; uniform float uLesion3Absorption;
-uniform sampler2D uLesion4Front; uniform sampler2D uLesion4Back; uniform float uLesion4Absorption;
-uniform sampler2D uLesion5Front; uniform sampler2D uLesion5Back; uniform float uLesion5Absorption;
+uniform sampler2D uObject0Front; uniform sampler2D uObject0Back; uniform float uObject0Absorption;
+uniform sampler2D uObject1Front; uniform sampler2D uObject1Back; uniform float uObject1Absorption;
+uniform sampler2D uObject2Front; uniform sampler2D uObject2Back; uniform float uObject2Absorption;
+uniform sampler2D uObject3Front; uniform sampler2D uObject3Back; uniform float uObject3Absorption;
+uniform sampler2D uObject4Front; uniform sampler2D uObject4Back; uniform float uObject4Absorption;
+uniform sampler2D uObject5Front; uniform sampler2D uObject5Back; uniform float uObject5Absorption;
 
 float trunkThickness(sampler2D frontTex, sampler2D backTex, vec2 uv) {
   vec4 f = texture2D(frontTex, uv);
@@ -168,9 +168,9 @@ float lungBrighten(vec2 uv) {
   return mix(1.0, 1.35, t);
 }
 
-// 石灰化・ステント病変(スロット単位)の厚み→濃淡。血管・心臓と同じBeer-Lambert式だが、
+// 石灰化・ステントオブジェクト(スロット単位)の厚み→濃淡。血管・心臓と同じBeer-Lambert式だが、
 // にじみ(ブラー)は掛けない(石灰化のくっきりした高吸収感、ステントの細線らしさを保つため)。
-float lesionDarkness(sampler2D frontTex, sampler2D backTex, float absorption, vec2 uv) {
+float objectDarkness(sampler2D frontTex, sampler2D backTex, float absorption, vec2 uv) {
   vec4 f = texture2D(frontTex, uv);
   vec4 b = texture2D(backTex, uv);
   float hit = min(f.a, b.a);
@@ -188,12 +188,12 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   float heartDarkness = (1.0 - exp(-heartThicknessTotal * ${HEART_ABSORPTION.toFixed(1)})) * uHeartIntensity;
 
   vec3 color = toned * (1.0 - heartDarkness) * (1.0 - vesselDarkness);
-  color *= (1.0 - lesionDarkness(uLesion0Front, uLesion0Back, uLesion0Absorption, uv));
-  color *= (1.0 - lesionDarkness(uLesion1Front, uLesion1Back, uLesion1Absorption, uv));
-  color *= (1.0 - lesionDarkness(uLesion2Front, uLesion2Back, uLesion2Absorption, uv));
-  color *= (1.0 - lesionDarkness(uLesion3Front, uLesion3Back, uLesion3Absorption, uv));
-  color *= (1.0 - lesionDarkness(uLesion4Front, uLesion4Back, uLesion4Absorption, uv));
-  color *= (1.0 - lesionDarkness(uLesion5Front, uLesion5Back, uLesion5Absorption, uv));
+  color *= (1.0 - objectDarkness(uObject0Front, uObject0Back, uObject0Absorption, uv));
+  color *= (1.0 - objectDarkness(uObject1Front, uObject1Back, uObject1Absorption, uv));
+  color *= (1.0 - objectDarkness(uObject2Front, uObject2Back, uObject2Absorption, uv));
+  color *= (1.0 - objectDarkness(uObject3Front, uObject3Back, uObject3Absorption, uv));
+  color *= (1.0 - objectDarkness(uObject4Front, uObject4Back, uObject4Absorption, uv));
+  color *= (1.0 - objectDarkness(uObject5Front, uObject5Back, uObject5Absorption, uv));
   outputColor = vec4(color, inputColor.a);
 }
 `;
@@ -259,13 +259,13 @@ export class CineVesselThicknessEffect extends Effect {
   private heartProxySourceGeometry: unknown = null;
   private readonly heartFrontTarget: WebGLRenderTarget;
   private readonly heartBackTarget: WebGLRenderTarget;
-  /** 石灰化・ステント病変用の汎用深度書き込みマテリアル(心臓用シェーダーを共有、aProximity不要のため) */
-  private readonly lesionFrontMaterial: ShaderMaterial;
-  private readonly lesionBackMaterial: ShaderMaterial;
-  private readonly lesionProxies: (Mesh | null)[] = new Array(LESION_SLOT_COUNT).fill(null);
-  private readonly lesionProxySourceGeometry: (unknown | null)[] = new Array(LESION_SLOT_COUNT).fill(null);
-  private readonly lesionFrontTargets: WebGLRenderTarget[];
-  private readonly lesionBackTargets: WebGLRenderTarget[];
+  /** 石灰化・ステントオブジェクト用の汎用深度書き込みマテリアル(心臓用シェーダーを共有、aProximity不要のため) */
+  private readonly objectFrontMaterial: ShaderMaterial;
+  private readonly objectBackMaterial: ShaderMaterial;
+  private readonly objectProxies: (Mesh | null)[] = new Array(OBJECT_SLOT_COUNT).fill(null);
+  private readonly objectProxySourceGeometry: (unknown | null)[] = new Array(OBJECT_SLOT_COUNT).fill(null);
+  private readonly objectFrontTargets: WebGLRenderTarget[];
+  private readonly objectBackTargets: WebGLRenderTarget[];
   private viewCamera: Camera | null = null;
   /**
    * false の間は心臓の陰影を深度ピールごと丸ごとスキップし、冠動脈のみを表示する
@@ -297,10 +297,10 @@ export class CineVesselThicknessEffect extends Effect {
       ["uHeartBlurRadius", new Uniform(heartBlurRadius)],
       ["uHeartOffset", new Uniform(new Vector2(heartOffsetX, heartOffsetY))],
     ]);
-    for (let slot = 0; slot < LESION_SLOT_COUNT; slot++) {
-      uniforms.set(`uLesion${slot}Front`, new Uniform(null));
-      uniforms.set(`uLesion${slot}Back`, new Uniform(null));
-      uniforms.set(`uLesion${slot}Absorption`, new Uniform(0));
+    for (let slot = 0; slot < OBJECT_SLOT_COUNT; slot++) {
+      uniforms.set(`uObject${slot}Front`, new Uniform(null));
+      uniforms.set(`uObject${slot}Back`, new Uniform(null));
+      uniforms.set(`uObject${slot}Absorption`, new Uniform(0));
     }
     super("CineVesselThicknessEffect", THICKNESS_FRAGMENT_SHADER, {
       blendFunction: BlendFunction.SET,
@@ -311,15 +311,15 @@ export class CineVesselThicknessEffect extends Effect {
     this.backMaterial = createDepthMaterial(DEPTH_VERTEX_SHADER, DEPTH_FRAGMENT_SHADER, BackSide);
     this.heartFrontMaterial = createDepthMaterial(HEART_DEPTH_VERTEX_SHADER, HEART_DEPTH_FRAGMENT_SHADER, FrontSide);
     this.heartBackMaterial = createDepthMaterial(HEART_DEPTH_VERTEX_SHADER, HEART_DEPTH_FRAGMENT_SHADER, BackSide);
-    this.lesionFrontMaterial = createDepthMaterial(HEART_DEPTH_VERTEX_SHADER, HEART_DEPTH_FRAGMENT_SHADER, FrontSide);
-    this.lesionBackMaterial = createDepthMaterial(HEART_DEPTH_VERTEX_SHADER, HEART_DEPTH_FRAGMENT_SHADER, BackSide);
+    this.objectFrontMaterial = createDepthMaterial(HEART_DEPTH_VERTEX_SHADER, HEART_DEPTH_FRAGMENT_SHADER, FrontSide);
+    this.objectBackMaterial = createDepthMaterial(HEART_DEPTH_VERTEX_SHADER, HEART_DEPTH_FRAGMENT_SHADER, BackSide);
     this.peelScene = new Scene();
     this.frontTargets = { RCA: createPeelTarget(), LAD: createPeelTarget(), LCX: createPeelTarget() };
     this.backTargets = { RCA: createPeelTarget(), LAD: createPeelTarget(), LCX: createPeelTarget() };
     this.heartFrontTarget = createPeelTarget();
     this.heartBackTarget = createPeelTarget();
-    this.lesionFrontTargets = Array.from({ length: LESION_SLOT_COUNT }, () => createPeelTarget());
-    this.lesionBackTargets = Array.from({ length: LESION_SLOT_COUNT }, () => createPeelTarget());
+    this.objectFrontTargets = Array.from({ length: OBJECT_SLOT_COUNT }, () => createPeelTarget());
+    this.objectBackTargets = Array.from({ length: OBJECT_SLOT_COUNT }, () => createPeelTarget());
     this.heartEnabled = heartEnabled;
   }
 
@@ -412,29 +412,29 @@ export class CineVesselThicknessEffect extends Effect {
   }
 
   /**
-   * Phase 6: 石灰化・ステント病変(スロット単位)のプロキシ。血管・心臓と同じ
+   * Phase 6: 石灰化・ステントオブジェクト(スロット単位)のプロキシ。血管・心臓と同じ
    * 「元メッシュのgeometryを共有しつつmatrixWorldだけ毎フレームコピーする」パターン。
-   * スロットに入る病変は表示トグル・追加/削除に応じて毎フレーム入れ替わり得るため、
+   * スロットに入るオブジェクトは表示トグル・追加/削除に応じて毎フレーム入れ替わり得るため、
    * geometry参照が変わったときだけ再生成する。
    */
-  private ensureLesionSlotProxy(slot: number, sourceMesh: Mesh): Mesh {
-    const existing = this.lesionProxies[slot];
-    if (existing && this.lesionProxySourceGeometry[slot] === sourceMesh.geometry) {
+  private ensureObjectSlotProxy(slot: number, sourceMesh: Mesh): Mesh {
+    const existing = this.objectProxies[slot];
+    if (existing && this.objectProxySourceGeometry[slot] === sourceMesh.geometry) {
       return existing;
     }
     if (existing) this.peelScene.remove(existing);
-    const proxy = new Mesh(sourceMesh.geometry, this.lesionFrontMaterial);
+    const proxy = new Mesh(sourceMesh.geometry, this.objectFrontMaterial);
     proxy.frustumCulled = false;
     proxy.matrixAutoUpdate = false;
     proxy.matrixWorldAutoUpdate = false;
     this.peelScene.add(proxy);
-    this.lesionProxies[slot] = proxy;
-    this.lesionProxySourceGeometry[slot] = sourceMesh.geometry;
+    this.objectProxies[slot] = proxy;
+    this.objectProxySourceGeometry[slot] = sourceMesh.geometry;
     return proxy;
   }
 
   /**
-   * peelSceneには血管3本+心臓+病変プールのプロキシが常駐しているため、1回のレンダーパスで
+   * peelSceneには血管3本+心臓+オブジェクトプールのプロキシが常駐しているため、1回のレンダーパスで
    * 「今measureしたい1つ」以外が写り込むと深度が汚染される(特に心臓は他の全プロキシより
    * 大きく、混入すると血管の厚みが大きく狂う)。パスの直前に対象以外を全てvisible=falseに
    * することで、常に1オブジェクトだけがpeelSceneに実質存在する状態を保証する。
@@ -445,7 +445,7 @@ export class CineVesselThicknessEffect extends Effect {
       if (proxy) proxy.visible = proxy === active;
     }
     if (this.heartProxy) this.heartProxy.visible = this.heartProxy === active;
-    for (const proxy of this.lesionProxies) {
+    for (const proxy of this.objectProxies) {
       if (proxy) proxy.visible = proxy === active;
     }
   }
@@ -519,13 +519,13 @@ export class CineVesselThicknessEffect extends Effect {
       heartUniformBack.value = null;
     }
 
-    // Phase 6: 石灰化・ステント病変プール(固定6スロット)。handle.lesionProxiesは
-    // CineAnatomyModel側で表示トグルOFFの病変を除外・6件までに切り詰め済み。
-    for (let slot = 0; slot < LESION_SLOT_COUNT; slot++) {
-      const entry = handle.lesionProxies[slot];
-      const frontUniform = this.uniforms.get(`uLesion${slot}Front`)!;
-      const backUniform = this.uniforms.get(`uLesion${slot}Back`)!;
-      const absorptionUniform = this.uniforms.get(`uLesion${slot}Absorption`)!;
+    // Phase 6: 石灰化・ステントオブジェクトプール(固定6スロット)。handle.objectProxiesは
+    // CineAnatomyModel側で表示トグルOFFのオブジェクトを除外・6件までに切り詰め済み。
+    for (let slot = 0; slot < OBJECT_SLOT_COUNT; slot++) {
+      const entry = handle.objectProxies[slot];
+      const frontUniform = this.uniforms.get(`uObject${slot}Front`)!;
+      const backUniform = this.uniforms.get(`uObject${slot}Back`)!;
+      const absorptionUniform = this.uniforms.get(`uObject${slot}Absorption`)!;
 
       if (!entry) {
         frontUniform.value = null;
@@ -533,23 +533,23 @@ export class CineVesselThicknessEffect extends Effect {
         continue;
       }
 
-      const proxy = this.ensureLesionSlotProxy(slot, entry.mesh);
+      const proxy = this.ensureObjectSlotProxy(slot, entry.mesh);
       proxy.matrixWorld.copy(entry.mesh.matrixWorld);
       this.activateOnlyProxy(proxy);
 
-      proxy.material = this.lesionFrontMaterial;
-      renderer.setRenderTarget(this.lesionFrontTargets[slot]);
+      proxy.material = this.objectFrontMaterial;
+      renderer.setRenderTarget(this.objectFrontTargets[slot]);
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);
       renderer.render(this.peelScene, camera);
 
-      proxy.material = this.lesionBackMaterial;
-      renderer.setRenderTarget(this.lesionBackTargets[slot]);
+      proxy.material = this.objectBackMaterial;
+      renderer.setRenderTarget(this.objectBackTargets[slot]);
       renderer.clear(true, true, true);
       renderer.render(this.peelScene, camera);
 
-      frontUniform.value = this.lesionFrontTargets[slot].texture;
-      backUniform.value = this.lesionBackTargets[slot].texture;
+      frontUniform.value = this.objectFrontTargets[slot].texture;
+      backUniform.value = this.objectBackTargets[slot].texture;
       absorptionUniform.value = entry.absorption;
     }
 
@@ -562,7 +562,7 @@ export class CineVesselThicknessEffect extends Effect {
       if (proxy) proxy.visible = true;
     }
     if (this.heartProxy) this.heartProxy.visible = true;
-    for (const proxy of this.lesionProxies) {
+    for (const proxy of this.objectProxies) {
       if (proxy) proxy.visible = true;
     }
 
@@ -577,16 +577,16 @@ export class CineVesselThicknessEffect extends Effect {
     }
     this.heartFrontTarget.dispose();
     this.heartBackTarget.dispose();
-    for (let slot = 0; slot < LESION_SLOT_COUNT; slot++) {
-      this.lesionFrontTargets[slot].dispose();
-      this.lesionBackTargets[slot].dispose();
+    for (let slot = 0; slot < OBJECT_SLOT_COUNT; slot++) {
+      this.objectFrontTargets[slot].dispose();
+      this.objectBackTargets[slot].dispose();
     }
     this.frontMaterial.dispose();
     this.backMaterial.dispose();
     this.heartFrontMaterial.dispose();
     this.heartBackMaterial.dispose();
-    this.lesionFrontMaterial.dispose();
-    this.lesionBackMaterial.dispose();
+    this.objectFrontMaterial.dispose();
+    this.objectBackMaterial.dispose();
     super.dispose();
   }
 }

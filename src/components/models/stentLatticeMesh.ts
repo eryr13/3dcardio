@@ -1,5 +1,5 @@
 import { BufferGeometry, Float32BufferAttribute, Vector3 } from "three";
-import type { StentLesion } from "../../types/lesion";
+import type { StentObject } from "../../types/object";
 import type { CenterlinePoint } from "./vesselCenterline";
 import { sampleCenterline } from "./vesselCenterline";
 
@@ -83,7 +83,7 @@ function propagateNormals(tangents: Vector3[]): Vector3[] {
  * 中心線の点列(points)と各点の半径(radii)から可変半径のチューブメッシュを生成する
  * 唯一のジオメトリ生成ロジック。血管本体は静的GLBメッシュであり「点列+半径配列から
  * チューブを生成する既存関数」は実在しないため、この関数をステント(および将来的に
- * 他の管状病変)から共通で使えるものとして切り出した。
+ * 他の管状オブジェクト)から共通で使えるものとして切り出した。
  *
  * three.jsのTubeGeometryは定数半径しか受け付けないため使えず、また
  * Curve.computeFrenetFrames()はgetPointAt()の弧長再パラメータ化を経由するため、
@@ -176,14 +176,14 @@ function computeMedianStentRadius(centerline: CenterlinePoint[], tStart: number,
  * 対する比率としてステント半径を決めるため、mmの数値自体がどんな値でも
  * スケール不一致は構造的に起こらない。
  */
-export function buildStentGeometry(centerline: CenterlinePoint[], lesion: StentLesion): BufferGeometry {
-  const half = Math.max(lesion.length / 2, 0.005);
-  const tStart = Math.max(0, lesion.position - half);
-  const tEnd = Math.min(1, lesion.position + half);
+export function buildStentGeometry(centerline: CenterlinePoint[], object: StentObject): BufferGeometry {
+  const half = Math.max(object.length / 2, 0.005);
+  const tStart = Math.max(0, object.position - half);
+  const tEnd = Math.min(1, object.position + half);
 
-  const stentRadius = computeMedianStentRadius(centerline, tStart, tEnd, lesion.diameter);
+  const stentRadius = computeMedianStentRadius(centerline, tStart, tEnd, object.diameter);
 
-  const segmentCount = Math.max(16, Math.min(64, Math.round(lesion.length * 200)));
+  const segmentCount = Math.max(16, Math.min(64, Math.round(object.length * 200)));
   const points: Vector3[] = [];
   const radii: number[] = [];
   for (let i = 0; i <= segmentCount; i++) {

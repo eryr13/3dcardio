@@ -34,15 +34,15 @@ export interface CineSceneHandle {
    * リアルX線モードの陰影用深度ピールプロキシの元ジオメトリとして参照する */
   heartMesh: Mesh | null;
   /**
-   * Phase 6: リアルX線モードで深度ピール密度表現の対象にする病変メッシュ(石灰化・ステント)。
+   * Phase 6: リアルX線モードで深度ピール密度表現の対象にするオブジェクトメッシュ(石灰化・ステント)。
    * CineVesselThicknessEffect が固定数のプール(6スロット)に登録して血管・心臓と同じ
-   * 「前面/背面深度ピール→厚み→濃淡」パイプラインに乗せる。表示トグルがOFFの病変は
+   * 「前面/背面深度ピール→厚み→濃淡」パイプラインに乗せる。表示トグルがOFFのオブジェクトは
    * この配列に含めない。
    */
-  lesionProxies: LesionProxyEntry[];
+  objectProxies: ObjectProxyEntry[];
 }
 
-export interface LesionProxyEntry {
+export interface ObjectProxyEntry {
   id: string;
   mesh: Mesh;
   /** リアルX線モードでの吸収係数。石灰化は血管より高く(より暗く)、ステントは非常に高くする。 */

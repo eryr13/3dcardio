@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useCardioStore } from "../../store/useCardioStore";
 import { cameraQuaternionToCArmAngles } from "../../utils/cArmAngles";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 const PRESETS: { label: string; raoLao: number; craCaud: number }[] = [
   { label: "AP", raoLao: 0, craCaud: 0 },
@@ -72,8 +73,7 @@ export function CArmReadout() {
   const displayCraCaud = draftCraCaud ?? angles.craCaud;
 
   return (
-    <section className="panel-section">
-      <h2>Cアーム角度</h2>
+    <CollapsibleSection title="Cアーム角度">
       <p className="carm-readout">
         {formatAngle("RAO", "LAO", angles.raoLao)} / {formatAngle("CRA", "CAUD", angles.craCaud)}
       </p>
@@ -129,6 +129,6 @@ export function CArmReadout() {
           </button>
         ))}
       </div>
-    </section>
+    </CollapsibleSection>
   );
 }

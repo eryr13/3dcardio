@@ -1,6 +1,6 @@
 import { BufferGeometry, Vector3 } from "three";
 import type { VesselId } from "../../types/anatomy";
-import type { StenosisLesion } from "../../types/lesion";
+import type { StenosisObject } from "../../types/object";
 import type { VesselGraph } from "./vesselGraph";
 import { getMainTrunk, getVesselGraph } from "./vesselGraph";
 
@@ -30,7 +30,7 @@ export interface CenterlineSample {
  * 血管の本幹の中心線データを取得する。中心線グラフ(本幹+側枝)は
  * scripts/extract_centerlines.py がオフラインで一度だけ生成した
  * src/data/centerlines.json から読み込む(実行時計算はしない、詳細は vesselGraph.ts 参照)。
- * 病変を特定の枝(本幹/側枝)に配置する必要がある箇所では、この関数ではなく
+ * オブジェクトを特定の枝(本幹/側枝)に配置する必要がある箇所では、この関数ではなく
  * vesselGraph.ts の getVesselGraph/getBranch を直接使うこと。
  */
 export function getVesselCenterline(vesselId: VesselId): CenterlinePoint[] {
@@ -80,7 +80,7 @@ export function sampleCenterline(centerline: CenterlinePoint[], t: number): Cent
 export function applyStenosisDeformation(
   geometry: BufferGeometry,
   graph: VesselGraph,
-  stenoses: StenosisLesion[],
+  stenoses: StenosisObject[],
 ): BufferGeometry {
   const visibleStenoses = stenoses.filter((s) => s.visible);
   if (visibleStenoses.length === 0) return geometry;
@@ -112,14 +112,14 @@ export function applyStenosisDeformation(
     if (!nearestBranchId) continue;
 
     let narrowing = 1;
-    for (const lesion of visibleStenoses) {
-      if (lesion.branchId !== nearestBranchId) continue;
-      const half = lesion.length / 2;
-      const dt = nearestT - lesion.position;
+    for (const object of visibleStenoses) {
+      if (object.branchId !== nearestBranchId) continue;
+      const half = object.length / 2;
+      const dt = nearestT - object.position;
       if (Math.abs(dt) > half * 3 + 0.001) continue; // ガウス裾は概ね3σで打ち切り(性能対策)
       const sigma = Math.max(half / 2, 0.001);
       const gaussian = Math.exp(-(dt * dt) / (2 * sigma * sigma));
-      const localNarrowing = 1 - (lesion.severity / 100) * gaussian;
+      const localNarrowing = 1 - (object.severity / 100) * gaussian;
       narrowing = Math.min(narrowing, localNarrowing);
     }
 

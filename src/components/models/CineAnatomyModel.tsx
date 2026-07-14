@@ -11,10 +11,10 @@ import {
 } from "three";
 import { useCardioStore } from "../../store/useCardioStore";
 import type { VesselId, VesselState } from "../../types/anatomy";
-import type { CalcificationLesion, StenosisLesion, StentLesion } from "../../types/lesion";
-import { getLesionsForVessel } from "../../types/lesion";
+import type { CalcificationObject, StenosisObject, StentObject } from "../../types/object";
+import { getObjectsForVessel } from "../../types/object";
 import { HeartbeatGroup } from "./HeartbeatGroup";
-import { useCalcificationGeometry, useStentGeometry } from "./LesionMeshes";
+import { useCalcificationGeometry, useStentGeometry } from "./ObjectMeshes";
 import { cineSceneBridge } from "./cineSceneBridge";
 import type { CenterlinePoint } from "./vesselCenterline";
 import { applyStenosisDeformation } from "./vesselCenterline";
@@ -43,9 +43,9 @@ function createVesselMaterial() {
   });
 }
 
-/** 病変(石灰化・ステント)のスキーマ表示用マテリアル。血管と同じ乗算ブレンディングだが、
+/** オブジェクト(石灰化・ステント)のスキーマ表示用マテリアル。血管と同じ乗算ブレンディングだが、
  * 少し明るいグレーにして血管と見分けがつくようにする。 */
-function createLesionSilhouetteMaterial(color: string) {
+function createObjectSilhouetteMaterial(color: string) {
   return new MeshBasicMaterial({
     color,
     transparent: true,
@@ -124,7 +124,7 @@ function isTrunkVisibleInCine(vessels: Record<string, VesselState>, trunkId: Ves
 export function CineAnatomyModel() {
   const { scene } = useGLTF(REALISTIC_HEART_URL);
   const vessels = useCardioStore((s) => s.vessels);
-  const lesions = useCardioStore((s) => s.lesions);
+  const objects = useCardioStore((s) => s.objects);
   const showHeartOutline = useCardioStore((s) => s.cine.showHeartOutline);
   const xrayMode = useCardioStore((s) => s.cine.xrayMode);
 
@@ -172,7 +172,7 @@ export function CineAnatomyModel() {
     return { root, meshesByName, graphs, originalGeometries, outline };
   }, [scene]);
 
-  // Phase 6: 狭窄病変に基づいてジオメトリを変形し、深度ピール用のaProximity属性を
+  // Phase 6: 狭窄オブジェクトに基づいてジオメトリを変形し、深度ピール用のaProximity属性を
   // 焼き直す。built(=scene.clone(true)由来のcine専用複製)のmesh.geometryだけを
   // 差し替えるため、メインビュー側には一切影響しない。
   useEffect(() => {
@@ -181,13 +181,13 @@ export function CineAnatomyModel() {
       const graph = built.graphs.get(id);
       const originalGeometry = built.originalGeometries.get(id);
       if (!mesh || !graph || !originalGeometry) continue;
-      const stenoses = getLesionsForVessel(lesions, id).filter(
-        (l): l is StenosisLesion => l.type === "stenosis",
+      const stenoses = getObjectsForVessel(objects, id).filter(
+        (o): o is StenosisObject => o.type === "stenosis",
       );
       const deformed = applyStenosisDeformation(originalGeometry, graph, stenoses);
       mesh.geometry = attachProximityAttribute(deformed);
     }
-  }, [built, lesions]);
+  }, [built, objects]);
 
   useEffect(() => {
     const vesselMeshes: Partial<Record<VesselId, Mesh>> = {};
@@ -224,30 +224,30 @@ export function CineAnatomyModel() {
     built.outline.rimMesh.visible = visible;
   }, [built, showHeartOutline, xrayMode]);
 
-  // Phase 6: 石灰化・ステントの病変メッシュへの参照を集約し、CineVesselThicknessEffectが
-  // リアルX線モードで深度ピール密度表現に使う固定プール(cineSceneBridge.lesionProxies)へ
+  // Phase 6: 石灰化・ステントのオブジェクトメッシュへの参照を集約し、CineVesselThicknessEffectが
+  // リアルX線モードで深度ピール密度表現に使う固定プール(cineSceneBridge.objectProxies)へ
   // 反映する。個々のCineCalcificationBump/CineStentLatticeのrefコールバックから呼ばれる。
-  const lesionMeshRefsById = useRef(new Map<string, { mesh: Mesh; absorption: number }>());
+  const objectMeshRefsById = useRef(new Map<string, { mesh: Mesh; absorption: number }>());
 
-  function syncLesionProxies() {
+  function syncObjectProxies() {
     if (!cineSceneBridge.current) return;
-    cineSceneBridge.current.lesionProxies = Array.from(lesionMeshRefsById.current.entries())
+    cineSceneBridge.current.objectProxies = Array.from(objectMeshRefsById.current.entries())
       .slice(0, 6)
       .map(([id, entry]) => ({ id, mesh: entry.mesh, absorption: entry.absorption }));
   }
 
-  function registerLesionMesh(id: string, absorption: number) {
+  function registerObjectMesh(id: string, absorption: number) {
     return (mesh: Mesh | null) => {
-      if (mesh) lesionMeshRefsById.current.set(id, { mesh, absorption });
-      else lesionMeshRefsById.current.delete(id);
-      syncLesionProxies();
+      if (mesh) objectMeshRefsById.current.set(id, { mesh, absorption });
+      else objectMeshRefsById.current.delete(id);
+      syncObjectProxies();
     };
   }
 
-  const visibleCalcifications = lesions.filter(
-    (l): l is CalcificationLesion => l.type === "calcification" && l.visible,
+  const visibleCalcifications = objects.filter(
+    (o): o is CalcificationObject => o.type === "calcification" && o.visible,
   );
-  const visibleStents = lesions.filter((l): l is StentLesion => l.type === "stent" && l.visible);
+  const visibleStents = objects.filter((o): o is StentObject => o.type === "stent" && o.visible);
 
   return (
     <HeartbeatGroup
@@ -257,31 +257,31 @@ export function CineAnatomyModel() {
     >
       <primitive object={built.root} />
 
-      {visibleCalcifications.map((lesion) => {
-        const graph = built.graphs.get(lesion.vesselId);
-        const branch = graph && getBranch(graph, lesion.branchId);
+      {visibleCalcifications.map((object) => {
+        const graph = built.graphs.get(object.vesselId);
+        const branch = graph && getBranch(graph, object.branchId);
         if (!branch) return null;
         return (
           <CineCalcificationBump
-            key={lesion.id}
-            lesion={lesion}
+            key={object.id}
+            object={object}
             centerline={branch.points}
             xrayMode={xrayMode}
-            onRef={registerLesionMesh(lesion.id, CALCIFICATION_ABSORPTION)}
+            onRef={registerObjectMesh(object.id, CALCIFICATION_ABSORPTION)}
           />
         );
       })}
-      {visibleStents.map((lesion) => {
-        const graph = built.graphs.get(lesion.vesselId);
-        const branch = graph && getBranch(graph, lesion.branchId);
+      {visibleStents.map((object) => {
+        const graph = built.graphs.get(object.vesselId);
+        const branch = graph && getBranch(graph, object.branchId);
         if (!branch) return null;
         return (
           <CineStentLattice
-            key={lesion.id}
-            lesion={lesion}
+            key={object.id}
+            object={object}
             centerline={branch.points}
             xrayMode={xrayMode}
-            onRef={registerLesionMesh(lesion.id, STENT_ABSORPTION)}
+            onRef={registerObjectMesh(object.id, STENT_ABSORPTION)}
           />
         );
       })}
@@ -289,23 +289,23 @@ export function CineAnatomyModel() {
   );
 }
 
-interface CineLesionMeshProps<T> {
-  lesion: T;
+interface CineObjectMeshProps<T> {
+  object: T;
   centerline: CenterlinePoint[];
   /** リアルX線モード中は色パス用メッシュを隠す(密度表現はCineVesselThicknessEffect側が担う) */
   xrayMode: boolean;
   onRef: (mesh: Mesh | null) => void;
 }
 
-function CineCalcificationBump({ lesion, centerline, xrayMode, onRef }: CineLesionMeshProps<CalcificationLesion>) {
-  const geometry = useCalcificationGeometry(centerline, lesion);
-  const material = useMemo(() => createLesionSilhouetteMaterial("#dcdcdc"), []);
+function CineCalcificationBump({ object, centerline, xrayMode, onRef }: CineObjectMeshProps<CalcificationObject>) {
+  const geometry = useCalcificationGeometry(centerline, object);
+  const material = useMemo(() => createObjectSilhouetteMaterial("#dcdcdc"), []);
   return <mesh geometry={geometry} material={material} visible={!xrayMode} ref={onRef} />;
 }
 
-function CineStentLattice({ lesion, centerline, xrayMode, onRef }: CineLesionMeshProps<StentLesion>) {
-  const geometry = useStentGeometry(centerline, lesion);
-  const material = useMemo(() => createLesionSilhouetteMaterial("#c8c8c8"), []);
+function CineStentLattice({ object, centerline, xrayMode, onRef }: CineObjectMeshProps<StentObject>) {
+  const geometry = useStentGeometry(centerline, object);
+  const material = useMemo(() => createObjectSilhouetteMaterial("#c8c8c8"), []);
   return <mesh geometry={geometry} material={material} visible={!xrayMode} ref={onRef} />;
 }
 

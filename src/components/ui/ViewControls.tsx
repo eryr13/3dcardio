@@ -1,14 +1,14 @@
 import { useCardioStore } from "../../store/useCardioStore";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 export function ViewControls() {
   const requestCameraReset = useCardioStore((s) => s.requestCameraReset);
 
   return (
-    <section className="panel-section">
-      <h2>カメラ</h2>
+    <CollapsibleSection title="カメラ">
       <button type="button" onClick={requestCameraReset}>
         視点をリセット
       </button>
-    </section>
+    </CollapsibleSection>
   );
 }

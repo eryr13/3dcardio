@@ -4,6 +4,7 @@ import type { CineFps } from "../../types/cine";
 import { cineSceneBridge } from "../models/cineSceneBridge";
 import { exportCineGif, exportCinePngZip } from "../../utils/cineExport";
 import { CineXrayDebugPanel } from "./CineXrayDebugPanel";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 const FPS_OPTIONS: CineFps[] = [15, 30];
 
@@ -38,8 +39,7 @@ export function CineControls() {
   }
 
   return (
-    <section className="panel-section">
-      <h2>シネ画像</h2>
+    <CollapsibleSection title="シネ画像">
       <label className="segment-mode-toggle">
         <input type="checkbox" checked={cine.enabled} onChange={(e) => setCineEnabled(e.target.checked)} />
         シネビューを表示
@@ -112,6 +112,6 @@ export function CineControls() {
         拍動アニメーションは0.5秒周期(収縮は素早く、拡張はゆっくり)・長軸方向優位の収縮+軽い捻れを
         近似したプレースホルダーです(実データ差し替え予定)。既定は静止状態で、「再生」を押すと動き始めます。
       </p>
-    </section>
+    </CollapsibleSection>
   );
 }

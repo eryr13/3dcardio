@@ -1,5 +1,5 @@
 import { BufferGeometry, Float32BufferAttribute, IcosahedronGeometry, Vector3 } from "three";
-import type { CalcificationLesion } from "../../types/lesion";
+import type { CalcificationObject } from "../../types/object";
 import type { CenterlinePoint } from "./vesselCenterline";
 import { sampleCenterline } from "./vesselCenterline";
 
@@ -23,19 +23,19 @@ function hashSeedFromId(id: string): number {
  * 血管の実メッシュとは独立したジオメトリなので、複数呼び出しても元の血管には
  * 一切影響しない。
  */
-export function buildCalcificationMesh(centerline: CenterlinePoint[], lesion: CalcificationLesion): BufferGeometry {
-  const seedBase = hashSeedFromId(lesion.id);
-  const blobCount = 2 + Math.floor((lesion.severity / 100) * 3);
-  const half = Math.max(lesion.length / 2, 0.005);
+export function buildCalcificationMesh(centerline: CenterlinePoint[], object: CalcificationObject): BufferGeometry {
+  const seedBase = hashSeedFromId(object.id);
+  const blobCount = 2 + Math.floor((object.severity / 100) * 3);
+  const half = Math.max(object.length / 2, 0.005);
 
   // 血管が分岐する付近では、中心線のY座標ビン分けによる推定(splitGeometryByLength と
   // 同じ簡易手法)が幹側・枝側の頂点を混同し、tがわずかに変わっただけで sample.point/radius/
-  // tangent が大きく飛ぶことがある(実機検証で確認: 分岐付近に病変を置くと、ブロブごとに
+  // tangent が大きく飛ぶことがある(実機検証で確認: 分岐付近にオブジェクトを置くと、ブロブごとに
   // 中心線を再サンプルする実装ではブロブの一部が本体から離れた場所に浮いて見えた)。
-  // これを避けるため、中心線のサンプリングは病変の代表位置(lesion.position)1点だけで行い、
+  // これを避けるため、中心線のサンプリングはオブジェクトの代表位置(object.position)1点だけで行い、
   // 各ブロブの分散はその1点のローカルフレーム(接線・法線面)内でのオフセットとして表現する
   // (中心線を分岐ごと跨いで再サンプルしない)。
-  const baseSample = sampleCenterline(centerline, lesion.position);
+  const baseSample = sampleCenterline(centerline, object.position);
   const arbitrary = Math.abs(baseSample.tangent.y) < 0.9 ? new Vector3(0, 1, 0) : new Vector3(1, 0, 0);
   const perp1 = new Vector3().crossVectors(baseSample.tangent, arbitrary).normalize();
   const perp2 = new Vector3().crossVectors(baseSample.tangent, perp1).normalize();
@@ -51,7 +51,7 @@ export function buildCalcificationMesh(centerline: CenterlinePoint[], lesion: Ca
     const angle = hash(seed + 3.3) * Math.PI * 2;
     const outward = perp1.clone().multiplyScalar(Math.cos(angle)).add(perp2.clone().multiplyScalar(Math.sin(angle)));
 
-    const blobRadius = baseSample.radius * (0.35 + (lesion.severity / 100) * 0.5) * (0.7 + hash(seed + 5.1) * 0.6);
+    const blobRadius = baseSample.radius * (0.35 + (object.severity / 100) * 0.5) * (0.7 + hash(seed + 5.1) * 0.6);
     // 血管表面あたりに中心を置く(半分埋まって半分外に飛び出すイメージ)
     const center = baseSample.point
       .clone()

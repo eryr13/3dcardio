@@ -27,12 +27,53 @@
   border-bottom: 1px solid #232b34;
 }
 
+.panel-section-summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.panel-section-summary::-webkit-details-marker {
+  display: none;
+}
+
 .panel-section h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 0.85rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #9fb0c0;
-  margin: 0 0 10px;
+  margin: 0;
+}
+
+.panel-section h2::before {
+  content: "▸";
+  display: inline-block;
+  font-size: 0.7em;
+  transition: transform 0.15s ease;
+}
+
+.panel-section[open] > .panel-section-summary h2::before {
+  transform: rotate(90deg);
+}
+
+.panel-section-content {
+  margin-top: 10px;
+}
+
+.panel-subheading {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6d8091;
+  margin: 0 0 8px;
+}
+
+.panel-divider {
+  border: none;
+  border-top: 1px solid #232b34;
+  margin: 14px 0;
 }
 
 .panel-section button {
@@ -373,14 +414,14 @@
   padding: 6px 4px;
 }
 
-.lesion-form {
+.object-form {
   display: flex;
   flex-direction: column;
   gap: 8px;
   margin-bottom: 14px;
 }
 
-.lesion-form-row {
+.object-form-row {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -388,8 +429,8 @@
   color: #9fb0c0;
 }
 
-.lesion-form-row select,
-.lesion-form-row input[type="number"] {
+.object-form-row select,
+.object-form-row input[type="number"] {
   background: #1f2a35;
   color: #e6edf3;
   border: 1px solid #2f3d4a;
@@ -397,42 +438,59 @@
   padding: 5px 6px;
 }
 
-.lesion-segment-hint {
+.object-segment-hint {
   margin-top: -4px;
 }
 
-.lesion-list {
+.object-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
-.lesion-item {
+.object-item {
   background: #1a222b;
   border: 1px solid #2f3d4a;
   border-radius: 6px;
-  padding: 8px 10px;
 }
 
-.lesion-item-header {
+.object-item-summary {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 0.82rem;
+  padding: 7px 10px;
+  cursor: pointer;
 }
 
-.lesion-type-icon {
+.object-item-chevron {
+  color: #6d8091;
+  font-size: 0.7em;
+  width: 1em;
+}
+
+.object-type-icon {
   color: #9fb0c0;
 }
 
-.lesion-item-title {
-  flex: 1 1 auto;
+.object-item-title {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
-.lesion-visible-toggle {
+.object-position-display {
+  flex: 1 1 auto;
+  color: #6d8091;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.object-visible-toggle {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -441,27 +499,47 @@
   white-space: nowrap;
 }
 
-.lesion-remove-button {
+.object-remove-button {
   width: auto;
   padding: 3px 8px;
   font-size: 0.76rem;
 }
 
-.lesion-item-controls {
+.object-item-details {
+  padding: 0 10px 10px;
+  border-top: 1px solid #232b34;
   display: flex;
-  gap: 12px;
-  margin-top: 6px;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.object-item-controls {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
   font-size: 0.78rem;
   color: #9fb0c0;
 }
 
-.lesion-item-controls label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.object-item-controls button {
+  width: auto;
+  padding: 3px 8px;
+  font-size: 0.76rem;
 }
 
-.lesion-item-controls input[type="number"] {
+.object-item-size-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #9fb0c0;
+}
+
+.object-item-size-row input[type="range"] {
+  flex: 1;
+}
+
+.object-item-size-row input[type="number"] {
   width: 52px;
   padding: 3px 5px;
   background: #1f2a35;
@@ -470,12 +548,12 @@
   border-radius: 4px;
 }
 
-.lesion-click-hint {
+.object-click-hint {
   color: #4fd7ff;
   font-weight: 600;
 }
 
-.lesion-fine-tune-row {
+.object-fine-tune-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -483,33 +561,23 @@
   color: #9fb0c0;
 }
 
-.lesion-fine-tune-row button {
+.object-fine-tune-row button {
   width: auto;
   padding: 5px 10px;
   font-size: 0.78rem;
 }
 
-.lesion-fine-tune-row .opacity-value {
+.object-fine-tune-row .opacity-value {
   min-width: 3.2em;
   text-align: center;
 }
 
-.lesion-item-editing {
+.object-item-editing {
   border-color: #4fd7ff;
   box-shadow: 0 0 0 1px #4fd7ff;
 }
 
-.lesion-position-display {
-  white-space: nowrap;
-}
-
-.lesion-item-controls button {
-  width: auto;
-  padding: 3px 8px;
-  font-size: 0.76rem;
-}
-
-.lesion-fork-choice {
+.object-fork-choice {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -521,20 +589,20 @@
   border-radius: 6px;
 }
 
-.lesion-fork-choice p {
+.object-fork-choice p {
   width: 100%;
   margin: 0 0 4px;
   font-size: 0.8rem;
   color: #4fd7ff;
 }
 
-.lesion-fork-choice button {
+.object-fork-choice button {
   width: auto;
   padding: 5px 10px;
   font-size: 0.78rem;
 }
 
-.lesion-node-tooltip {
+.object-node-tooltip {
   background: #1f2a35;
   color: #e6edf3;
   border: 1px solid #4fd7ff;

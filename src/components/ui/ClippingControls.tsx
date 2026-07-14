@@ -1,5 +1,6 @@
 import { useCardioStore } from "../../store/useCardioStore";
 import type { ClippingAxis } from "../../types/anatomy";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 const AXES: { id: ClippingAxis; label: string }[] = [
   { id: "x", label: "X" },
@@ -13,8 +14,7 @@ export function ClippingControls() {
   const resetClipping = useCardioStore((s) => s.resetClipping);
 
   return (
-    <section className="panel-section">
-      <h2>断面表示 (クリッピング)</h2>
+    <CollapsibleSection title="断面表示 (クリッピング)">
       {AXES.map(({ id, label }) => {
         const axisState = clipping[id];
         return (
@@ -42,6 +42,6 @@ export function ClippingControls() {
       <button type="button" onClick={resetClipping}>
         断面をリセット
       </button>
-    </section>
+    </CollapsibleSection>
   );
 }

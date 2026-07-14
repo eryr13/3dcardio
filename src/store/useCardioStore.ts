@@ -11,7 +11,7 @@ import type {
 import type { CineFps, CineState, CineXrayParams } from "../types/cine";
 import type { PatientFrameCalibration } from "../types/cArmCalibration";
 import { DEFAULT_CALIBRATION } from "../types/cArmCalibration";
-import type { Lesion, LesionPatch, NewLesionInput } from "../types/lesion";
+import type { CardioObject, ObjectPatch, NewObjectInput } from "../types/object";
 import { buildSegmentVesselStates } from "../components/models/vesselSegments";
 
 /**
@@ -76,41 +76,41 @@ interface CardioStore {
   setCineExporting: (exporting: boolean) => void;
   setCinePanelWidth: (width: number) => void;
 
-  /** Phase 6: 血管上に疑似配置した病変(狭窄・石灰化・ステント)の一覧 */
-  lesions: Lesion[];
-  addLesion: (lesion: NewLesionInput) => void;
-  updateLesion: (id: string, patch: LesionPatch) => void;
-  removeLesion: (id: string) => void;
+  /** Phase 6: 血管上に疑似配置したオブジェクト(狭窄・石灰化・ステント等)の一覧 */
+  objects: CardioObject[];
+  addObject: (object: NewObjectInput) => void;
+  updateObject: (id: string, patch: ObjectPatch) => void;
+  removeObject: (id: string) => void;
   /**
-   * 3Dビュー上でノードをクリックした際、病変追加フォームへ事前入力する一時的な
-   * 位置(枝ID+その枝上の位置)。フォーム側で消費(addLesion実行、またはキャンセル)
+   * 3Dビュー上でノードをクリックした際、オブジェクト追加フォームへ事前入力する一時的な
+   * 位置(枝ID+その枝上の位置)。フォーム側で消費(addObject実行、またはキャンセル)
    * したら null に戻す。
    */
-  pendingLesionPosition: { vesselId: VesselId; branchId: string; position: number } | null;
-  setPendingLesionPosition: (v: { vesselId: VesselId; branchId: string; position: number } | null) => void;
+  pendingObjectPosition: { vesselId: VesselId; branchId: string; position: number } | null;
+  setPendingObjectPosition: (v: { vesselId: VesselId; branchId: string; position: number } | null) => void;
   /**
-   * 病変追加フォームで位置・長さを微調整している間、3Dビューにライブプレビュー
-   * (簡易円筒)を表示するための一時状態。まだstore.lesionsには登録されていない
-   * (=addLesion実行前の)下書き状態を表す。
+   * オブジェクト追加フォームで位置・長さを微調整している間、3Dビューにライブプレビュー
+   * (簡易円筒)を表示するための一時状態。まだstore.objectsには登録されていない
+   * (=addObject実行前の)下書き状態を表す。
    */
-  previewLesion: { vesselId: VesselId; branchId: string; position: number; length: number } | null;
-  setPreviewLesion: (
+  previewObject: { vesselId: VesselId; branchId: string; position: number; length: number } | null;
+  setPreviewObject: (
     v: { vesselId: VesselId; branchId: string; position: number; length: number } | null,
   ) => void;
   /**
-   * 登録済み病変の位置を「3Dビューでノードをクリックし直して変更」するモード。
-   * nullでない間は、ModelLoader側のクリックハンドラがpendingLesionPositionの
-   * 代わりにこのIDの病変を直接updateLesionで更新する。
+   * 登録済みオブジェクトの位置を「3Dビューでノードをクリックし直して変更」するモード。
+   * nullでない間は、ModelLoader側のクリックハンドラがpendingObjectPositionの
+   * 代わりにこのIDのオブジェクトを直接updateObjectで更新する。
    */
-  editingLesionId: string | null;
-  setEditingLesionId: (id: string | null) => void;
+  editingObjectId: string | null;
+  setEditingObjectId: (id: string | null) => void;
   /**
-   * 新規病変追加のため、3Dビュー上でノードマーカーを表示してクリック待ちにしている
-   * 血管。画面が常時うるさくならないよう、ノードマーカーは「病変を追加」フォームで
-   * 明示的に位置選択を開始した間、またはeditingLesionIdが設定されている間だけ表示する。
+   * 新規オブジェクト追加のため、3Dビュー上でノードマーカーを表示してクリック待ちにしている
+   * 血管。画面が常時うるさくならないよう、ノードマーカーは「オブジェクトを追加」フォームで
+   * 明示的に位置選択を開始した間、またはeditingObjectIdが設定されている間だけ表示する。
    */
-  pickingLesionVessel: VesselId | null;
-  setPickingLesionVessel: (v: VesselId | null) => void;
+  pickingObjectVessel: VesselId | null;
+  setPickingObjectVessel: (v: VesselId | null) => void;
 }
 
 export interface CameraAngleRequest {
@@ -299,39 +299,39 @@ export const useCardioStore = create<CardioStore>((set) => ({
       },
     })),
 
-  lesions: [],
+  objects: [],
 
-  addLesion: (lesion) =>
+  addObject: (object) =>
     set((state) => ({
-      lesions: [...state.lesions, { ...lesion, id: createLesionId() } as Lesion],
+      objects: [...state.objects, { ...object, id: createObjectId() } as CardioObject],
     })),
 
-  updateLesion: (id, patch) =>
+  updateObject: (id, patch) =>
     set((state) => ({
-      lesions: state.lesions.map((lesion) => (lesion.id === id ? ({ ...lesion, ...patch } as Lesion) : lesion)),
+      objects: state.objects.map((object) => (object.id === id ? ({ ...object, ...patch } as CardioObject) : object)),
     })),
 
-  removeLesion: (id) =>
+  removeObject: (id) =>
     set((state) => ({
-      lesions: state.lesions.filter((lesion) => lesion.id !== id),
+      objects: state.objects.filter((object) => object.id !== id),
     })),
 
-  pendingLesionPosition: null,
+  pendingObjectPosition: null,
 
-  setPendingLesionPosition: (v) => set({ pendingLesionPosition: v }),
+  setPendingObjectPosition: (v) => set({ pendingObjectPosition: v }),
 
-  previewLesion: null,
-  setPreviewLesion: (v) => set({ previewLesion: v }),
+  previewObject: null,
+  setPreviewObject: (v) => set({ previewObject: v }),
 
-  editingLesionId: null,
-  setEditingLesionId: (id) => set({ editingLesionId: id }),
+  editingObjectId: null,
+  setEditingObjectId: (id) => set({ editingObjectId: id }),
 
-  pickingLesionVessel: null,
-  setPickingLesionVessel: (v) => set({ pickingLesionVessel: v }),
+  pickingObjectVessel: null,
+  setPickingObjectVessel: (v) => set({ pickingObjectVessel: v }),
 }));
 
-function createLesionId(): string {
-  return `lesion-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+function createObjectId(): string {
+  return `object-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
 }
 
 /** playing 中なら現在時刻までの経過分を accumulatedSeconds に畳み込んで停止する */

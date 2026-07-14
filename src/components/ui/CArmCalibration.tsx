@@ -1,4 +1,5 @@
 import { useCardioStore } from "../../store/useCardioStore";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 const HEAD_AXIS_PRESETS: { label: string; axis: [number, number, number] }[] = [
   { label: "+X", axis: [1, 0, 0] },
@@ -24,8 +25,7 @@ export function CArmCalibration() {
   const setApAxisFromCurrentCamera = useCardioStore((s) => s.setApAxisFromCurrentCamera);
 
   return (
-    <section className="panel-section">
-      <h2>解剖座標キャリブレーション</h2>
+    <CollapsibleSection title="解剖座標キャリブレーション">
       <p className="panel-note">
         メインビューの軸表示(黄=頭側 / 青=AP)を見ながら、①だいたいの頭側の軸を選び、
         ②視点を患者の正面(AP)に合わせてボタンを押してください。②を押した時点の視点が
@@ -47,6 +47,6 @@ export function CArmCalibration() {
       <button type="button" className="reset-display-button" onClick={setApAxisFromCurrentCamera}>
         この視点をAP正面として設定
       </button>
-    </section>
+    </CollapsibleSection>
   );
 }
