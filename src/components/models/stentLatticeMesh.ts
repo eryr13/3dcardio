@@ -3,6 +3,22 @@ import type { StentObject } from "../../types/object";
 import type { CenterlinePoint } from "./vesselCenterline";
 import { sampleCenterline } from "./vesselCenterline";
 
+/** ステントの網目(ストラット)生成パラメータ。デバッグパネルから調整できる。 */
+export interface StentLatticeParams {
+  /** 周方向に並べるストラット(ジグザグ状の線)の本数 */
+  strutCount: number;
+  /** 1本のストラットがステント全長にわたって描くジグザグの往復回数 */
+  crossingsPerWire: number;
+  /** ストラットの太さ(ステント半径に対する比率) */
+  strutRadiusRatio: number;
+}
+
+export const DEFAULT_STENT_LATTICE_PARAMS: StentLatticeParams = {
+  strutCount: 8,
+  crossingsPerWire: 6,
+  strutRadiusRatio: 0.12,
+};
+
 /**
  * ステント径(mm相当のUI入力値)を、GLBメッシュのワールド単位系に依存しない形で
  * 局所血管半径にスケールするための基準値。典型的な冠動脈径3.0mmを基準に、
@@ -80,6 +96,24 @@ function propagateNormals(tangents: Vector3[]): Vector3[] {
 }
 
 /**
+ * 中心線の点列から、平滑化済み点列・各点のtangent・回転最小化フレームのnormalを
+ * まとめて計算する。buildTubeFromPointsの内部計算そのものだが、ストラットの
+ * ジグザグ生成でも「土台円筒と同じ安定したフレーム」を1回だけ計算して全ストラット線で
+ * 共有したいため、独立した関数として切り出している(ジグザグ点列自体から
+ * フレームを再計算すると、鋭い折れ線でtangentが暴れ、過去に問題が出た向きの破綻を
+ * 再現しかねないため避ける)。
+ */
+export function computeTubeFrame(
+  rawPoints: Vector3[],
+  smoothingPasses = 24,
+): { points: Vector3[]; tangents: Vector3[]; normals: Vector3[] } {
+  const points = smoothPoints(rawPoints, smoothingPasses);
+  const tangents = computeTangents(points);
+  const normals = propagateNormals(tangents);
+  return { points, tangents, normals };
+}
+
+/**
  * 中心線の点列(points)と各点の半径(radii)から可変半径のチューブメッシュを生成する
  * 唯一のジオメトリ生成ロジック。血管本体は静的GLBメッシュであり「点列+半径配列から
  * チューブを生成する既存関数」は実在しないため、この関数をステント(および将来的に
@@ -90,12 +124,19 @@ function propagateNormals(tangents: Vector3[]): Vector3[] {
  * ここで渡すpoints/radiiのインデックス(パラメータt等間隔)と対応が取れなくなる
  * (実装検討中に判明)。そのため、フレーム計算は自前のpropagateNormals(前点からの
  * 回転伝播)で行い、points[i]/radii[i]と1対1に対応する形で頂点を生成する。
+ *
+ * smoothingPassesは既定で強め(24回)の平滑化をかけるが、ストラットのジグザグ点列の
+ * ように「意図した折れ線形状を保ったまま太さだけ与えたい」場合は小さい値
+ * (または0)を渡せるようにしている。
  */
-export function buildTubeFromPoints(rawPoints: Vector3[], radii: number[], radialSegments = 16): BufferGeometry {
-  const points = smoothPoints(rawPoints);
+export function buildTubeFromPoints(
+  rawPoints: Vector3[],
+  radii: number[],
+  radialSegments = 16,
+  smoothingPasses = 24,
+): BufferGeometry {
+  const { points, tangents, normals } = computeTubeFrame(rawPoints, smoothingPasses);
   const segments = points.length - 1;
-  const tangents = computeTangents(points);
-  const normals = propagateNormals(tangents);
 
   const positions: number[] = [];
   const outNormals: number[] = [];
@@ -193,4 +234,144 @@ export function buildStentGeometry(centerline: CenterlinePoint[], object: StentO
   }
 
   return buildTubeFromPoints(points, radii);
+}
+
+/** ストラット(細いチューブ)1本あたりの円周分割数。太さが細いため少なめで十分。 */
+const STRUT_RADIAL_SEGMENTS = 6;
+
+/**
+ * ストラットのジグザグ点列はそれ自体が意図した折れ線形状であり、buildTubeFromPoints
+ * 既定の強い平滑化(24回)をかけるとジグザグがほぼ消えて直線になってしまう。
+ * 太さを与える程度のごく軽い平滑化(2回)に留める。
+ */
+const STRUT_SMOOTHING_PASSES = 2;
+
+/**
+ * 周期1、値域[-1, 1]の三角波。ストラットの周方向角度をジグザグに変調するのに使う
+ * (sin波は交点付近の傾きが緩く網目の「角」が立たないため、直線的に往復する
+ * 三角波を採用する)。
+ */
+function triangleWave(x: number): number {
+  const frac = x - Math.floor(x);
+  return frac < 0.5 ? frac * 4 - 1 : 3 - frac * 4;
+}
+
+/**
+ * 複数のBufferGeometry(いずれもposition/normal/uv属性とindexを持つ)を1つに
+ * 手動で連結する。three.jsのBufferGeometryUtils.mergeGeometriesはこのリポジトリの
+ * 依存関係に含まれておらず、新規に依存を追加するほどの処理でもないため、
+ * 既存のcalcificationMesh.tsと同様に手動連結で対応する。
+ */
+function mergeIndexedGeometries(geometries: BufferGeometry[]): BufferGeometry {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  let vertexOffset = 0;
+
+  for (const geometry of geometries) {
+    const positionAttr = geometry.getAttribute("position");
+    const normalAttr = geometry.getAttribute("normal");
+    const uvAttr = geometry.getAttribute("uv");
+    const index = geometry.getIndex();
+    if (!index) continue;
+
+    for (let i = 0; i < positionAttr.count; i++) {
+      positions.push(positionAttr.getX(i), positionAttr.getY(i), positionAttr.getZ(i));
+      normals.push(normalAttr.getX(i), normalAttr.getY(i), normalAttr.getZ(i));
+      uvs.push(uvAttr.getX(i), uvAttr.getY(i));
+    }
+    for (let i = 0; i < index.count; i++) {
+      indices.push(index.getX(i) + vertexOffset);
+    }
+    vertexOffset += positionAttr.count;
+  }
+
+  const merged = new BufferGeometry();
+  merged.setIndex(indices);
+  merged.setAttribute("position", new Float32BufferAttribute(positions, 3));
+  merged.setAttribute("normal", new Float32BufferAttribute(normals, 3));
+  merged.setAttribute("uv", new Float32BufferAttribute(uvs, 2));
+  return merged;
+}
+
+/**
+ * ステントのダイヤモンドカット状ラティス(網目状ストラット構造)ジオメトリを生成する。
+ *
+ * レベル1: buildStentGeometryと全く同じ区間・同じ中央値半径から、中心線の
+ * 安定したフレーム(平滑化済み点列・tangent・回転最小化normal)を1回だけ計算し、
+ * 全ストラット線で共有する(土台円筒と全く同じ計算を再利用するため、土台円筒が
+ * 血管に正しく沿っていれば網目も必ず正しく沿う)。
+ *
+ * レベル2: strutCount本のストラット線を、円周方向に等間隔な基準角度から
+ * 三角波でジグザグに角度変調しながらこのフレームからのオフセットとして生成する。
+ * 隣り合うストラット線の振幅がちょうど基準角度の間隔の半分(±π/strutCount)なので、
+ * 隣接線同士が触れ合うジグザグの頂点で交差し、連続した菱形(ダイヤモンド)の
+ * 網目模様になる。各線は、既存の実績あるbuildTubeFromPointsで細いチューブ化する
+ * (ジグザグ形状を保つためsmoothingPassesは小さい値に抑える)。
+ *
+ * ワールド座標へは一切直接配置せず、常にレベル1のローカルフレーム(tangent/normal/
+ * binormal)を基準にオフセットを計算しているため、過去に発生した向きの破綻は
+ * 構造的に起こらない。
+ */
+export function buildStentLatticeGeometry(
+  centerline: CenterlinePoint[],
+  object: StentObject,
+  params: StentLatticeParams,
+): BufferGeometry {
+  const half = Math.max(object.length / 2, 0.005);
+  const tStart = Math.max(0, object.position - half);
+  const tEnd = Math.min(1, object.position + half);
+
+  const stentRadius = computeMedianStentRadius(centerline, tStart, tEnd, object.diameter);
+  const strutRadius = Math.max(stentRadius * params.strutRadiusRatio, 0.0004);
+  const crossingsPerWire = Math.max(1, params.crossingsPerWire);
+  const strutCount = Math.max(1, Math.round(params.strutCount));
+
+  // ジグザグの往復を滑らかなチューブとして表現できるだけの解像度を確保する
+  // (ジグザグ回数が多いほど、それを表現するのに必要な点数も増える)。
+  const segmentCount = Math.max(64, Math.min(480, crossingsPerWire * 24));
+
+  const rawPoints: Vector3[] = [];
+  for (let i = 0; i <= segmentCount; i++) {
+    const t = tStart + ((tEnd - tStart) * i) / segmentCount;
+    rawPoints.push(sampleCenterline(centerline, t).point);
+  }
+  const { points: framePoints, tangents, normals } = computeTubeFrame(rawPoints);
+
+  const binormal = new Vector3();
+  const halfSpacing = Math.PI / strutCount;
+  const geometries: BufferGeometry[] = [];
+
+  for (let k = 0; k < strutCount; k++) {
+    const baseAngle = (k / strutCount) * Math.PI * 2;
+    const wirePoints: Vector3[] = [];
+    const wireRadii: number[] = [];
+
+    for (let i = 0; i <= segmentCount; i++) {
+      const u = i / segmentCount;
+      const center = framePoints[i];
+      const N = normals[i];
+      const T = tangents[i];
+      binormal.crossVectors(T, N).normalize();
+
+      const angle = baseAngle + halfSpacing * triangleWave(u * crossingsPerWire);
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      wirePoints.push(
+        new Vector3(
+          center.x + stentRadius * (cos * N.x + sin * binormal.x),
+          center.y + stentRadius * (cos * N.y + sin * binormal.y),
+          center.z + stentRadius * (cos * N.z + sin * binormal.z),
+        ),
+      );
+      wireRadii.push(strutRadius);
+    }
+
+    geometries.push(
+      buildTubeFromPoints(wirePoints, wireRadii, STRUT_RADIAL_SEGMENTS, STRUT_SMOOTHING_PASSES),
+    );
+  }
+
+  return mergeIndexedGeometries(geometries);
 }

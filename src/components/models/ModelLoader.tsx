@@ -55,10 +55,11 @@ export function AnatomyModels({ source = { type: "gltf", url: REALISTIC_HEART_UR
 /**
  * デバッグ用: 中心線グラフの全枝(本幹+側枝)を、実際の血管メッシュに重ねて可視化する
  * (オブジェクトのジオメトリ生成は一切行わない)。本幹判定ロジックが解剖学的に
- * 妥当な経路を選べているか、側枝が正しく分離されているかを目視確認するための一時的なコード。
+ * 妥当な経路を選べているか、側枝が正しく分離されているかを目視確認するためのもので、
+ * サイドバーの「デバッグ(開発者向け)」パネルから表示/非表示を切り替えられる
+ * (既定は非表示、store.debugShowCenterlines参照)。
  * 本幹は白の太線、側枝は枝ごとに色を変えた細線で表示する。
  */
-const DEBUG_SHOW_CENTERLINES = true;
 const SIDE_BRANCH_DEBUG_COLORS = ["#ff2d55", "#ffee00", "#00e5ff", "#ff9500", "#af52de", "#34c759", "#5ac8fa"];
 
 function CenterlineDebugOverlay({ vesselId }: { vesselId: VesselId }) {
@@ -189,6 +190,7 @@ function GltfAnatomyModels({ url }: { url: string }) {
   const updateObject = useCardioStore((s) => s.updateObject);
   const pickingObjectVessel = useCardioStore((s) => s.pickingObjectVessel);
   const setPickingObjectVessel = useCardioStore((s) => s.setPickingObjectVessel);
+  const debugShowCenterlines = useCardioStore((s) => s.debugShowCenterlines);
   const [hovered, setHovered] = useState<{ id: string; point: Vector3 } | null>(null);
 
   const meshesByName = useMemo(() => {
@@ -400,7 +402,7 @@ function GltfAnatomyModels({ url }: { url: string }) {
         return <ObjectMeshes key={id} vesselId={id} graph={graph} objects={objects} />;
       })}
 
-      {DEBUG_SHOW_CENTERLINES &&
+      {debugShowCenterlines &&
         VESSEL_IDS.map((id) => {
           if (!vessels[id]?.visible) return null;
           return <CenterlineDebugOverlay key={`centerline-debug-${id}`} vesselId={id} />;

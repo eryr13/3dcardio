@@ -5,6 +5,7 @@ import { ObjectPanel } from "./ObjectPanel";
 import { CineControls } from "./CineControls";
 import { CArmCalibration } from "./CArmCalibration";
 import { CArmReadout } from "./CArmReadout";
+import { DebugPanel } from "./DebugPanel";
 
 export function SidePanel() {
   return (
@@ -17,6 +18,7 @@ export function SidePanel() {
       <CineControls />
       <CArmCalibration />
       <CArmReadout />
+      <DebugPanel />
     </aside>
   );
 }

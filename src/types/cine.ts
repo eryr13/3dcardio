@@ -17,8 +17,18 @@ export interface CineXrayParams {
   vignetteStrength: number;
   /** トーンカーブのコントラスト。0〜1(0.5=無変化相当) */
   contrast: number;
-  /** 血管濃淡のBeer-Lambert吸収係数。大きいほど同じ太さでも濃く見える */
+  /** 血管(造影剤)濃淡のBeer-Lambert吸収係数。大きいほど同じ太さでも濃く見える */
   vesselAbsorption: number;
+  /**
+   * 石灰化プラークのBeer-Lambert吸収係数。カルシウムは造影剤よりX線吸収が高いため、
+   * 既定値は vesselAbsorption より大きくしてある(血管より濃く写る)。
+   */
+  calcificationAbsorption: number;
+  /**
+   * ステント(ストラット)のBeer-Lambert吸収係数。金属は石灰化よりさらに吸収が高いため、
+   * 既定値は calcificationAbsorption よりさらに大きくしてある。
+   */
+  stentAbsorption: number;
   /** 横隔膜/脊椎のダミーシルエットを背景に薄く表示するか(低優先度オプション) */
   showBackgroundAnatomy: boolean;
   /** 心臓の陰影の濃さの上限キャップ。0〜1(血管ほど暗くならないよう頭打ちにする) */

@@ -13,6 +13,8 @@ import type { PatientFrameCalibration } from "../types/cArmCalibration";
 import { DEFAULT_CALIBRATION } from "../types/cArmCalibration";
 import type { CardioObject, ObjectPatch, NewObjectInput } from "../types/object";
 import { buildSegmentVesselStates } from "../components/models/vesselSegments";
+import type { StentLatticeParams } from "../components/models/stentLatticeMesh";
+import { DEFAULT_STENT_LATTICE_PARAMS } from "../components/models/stentLatticeMesh";
 
 /**
  * メインビューの初期カメラ位置。CameraRig.tsx が実際にマウントした際もこの値を使う
@@ -111,6 +113,15 @@ interface CardioStore {
    */
   pickingObjectVessel: VesselId | null;
   setPickingObjectVessel: (v: VesselId | null) => void;
+
+  /**
+   * 開発者向けデバッグ表示のトグル群。既定はすべて非表示/既定値にし、
+   * サイドバー最下部の「デバッグ(開発者向け)」パネルから切り替える。
+   */
+  debugShowCenterlines: boolean;
+  setDebugShowCenterlines: (v: boolean) => void;
+  stentLatticeParams: StentLatticeParams;
+  setStentLatticeParams: (patch: Partial<StentLatticeParams>) => void;
 }
 
 export interface CameraAngleRequest {
@@ -168,6 +179,8 @@ export const DEFAULT_CINE_XRAY_PARAMS: CineXrayParams = {
   vignetteStrength: 0.5,
   contrast: 0.65,
   vesselAbsorption: 15,
+  calcificationAbsorption: 25,
+  stentAbsorption: 45,
   showBackgroundAnatomy: false,
   heartShadowIntensity: 0.4,
   heartShadowSpread: 0.02,
@@ -328,6 +341,13 @@ export const useCardioStore = create<CardioStore>((set) => ({
 
   pickingObjectVessel: null,
   setPickingObjectVessel: (v) => set({ pickingObjectVessel: v }),
+
+  debugShowCenterlines: false,
+  setDebugShowCenterlines: (v) => set({ debugShowCenterlines: v }),
+
+  stentLatticeParams: DEFAULT_STENT_LATTICE_PARAMS,
+  setStentLatticeParams: (patch) =>
+    set((state) => ({ stentLatticeParams: { ...state.stentLatticeParams, ...patch } })),
 }));
 
 function createObjectId(): string {

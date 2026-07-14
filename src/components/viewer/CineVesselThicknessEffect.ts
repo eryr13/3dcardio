@@ -38,6 +38,16 @@ const HEART_ABSORPTION = 6.0;
  */
 const OBJECT_SLOT_COUNT = 6;
 
+/**
+ * THICKNESS_FRAGMENT_SHADERが同時にバインドするsampler2Dユニフォームの総数
+ * (入力バッファ1 + 血管front/back 3*2 + 心臓front/back 2 + オブジェクトfront/back
+ * OBJECT_SLOT_COUNT*2)。WebGL2はフラグメントシェーダーにつき最低16テクスチャ
+ * イメージユニットを保証するのみで、この数を超えるとGPU/ドライバによっては
+ * シェーダープログラムのリンクに失敗し、画面が真っ黒になる(=何もレンダーされない)
+ * 可能性がある。update()の初回呼び出しで実際の上限と比較し、不足時は診断ログを出す。
+ */
+const REQUIRED_TEXTURE_UNITS = 1 + VESSEL_IDS.length * 2 + 2 + OBJECT_SLOT_COUNT * 2;
+
 const DEPTH_VERTEX_SHADER = /* glsl */ `
 attribute float aProximity;
 varying float vViewZ;
@@ -282,6 +292,8 @@ export class CineVesselThicknessEffect extends Effect {
    * (「冠動脈のみ表示」オプション用。オフの間はレンダーコストも節約できる)。
    */
   public heartEnabled: boolean;
+  /** GPU側のテクスチャユニット数診断を初回updateで1回だけ行うためのフラグ */
+  private diagnosticsLogged = false;
 
   constructor({
     absorption = 10,
@@ -461,6 +473,20 @@ export class CineVesselThicknessEffect extends Effect {
   }
 
   override update(renderer: WebGLRenderer): void {
+    if (!this.diagnosticsLogged) {
+      this.diagnosticsLogged = true;
+      const gl = renderer.getContext();
+      const maxTextureImageUnits = gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) as number;
+      if (maxTextureImageUnits < REQUIRED_TEXTURE_UNITS) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `CineVesselThicknessEffect: このGPU/ドライバのMAX_TEXTURE_IMAGE_UNITS(${maxTextureImageUnits})が` +
+            `シェーダーが要求するテクスチャユニット数(${REQUIRED_TEXTURE_UNITS})に対して不足しています。` +
+            "リアルX線モードのシェーダーがリンクできず、画面に何も描画されない可能性があります。",
+        );
+      }
+    }
+
     const handle = cineSceneBridge.current;
     const camera = this.viewCamera;
     if (!handle || !camera) return;

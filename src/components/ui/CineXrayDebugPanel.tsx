@@ -18,6 +18,8 @@ const SLIDERS: SliderDef[] = [
   { key: "vignetteStrength", label: "ビネット強度", min: 0, max: 1, step: 0.01 },
   { key: "contrast", label: "コントラスト", min: 0, max: 1, step: 0.01 },
   { key: "vesselAbsorption", label: "血管吸収係数", min: 0.5, max: 30, step: 0.5 },
+  { key: "calcificationAbsorption", label: "石灰化吸収係数", min: 0.5, max: 60, step: 0.5 },
+  { key: "stentAbsorption", label: "ステント吸収係数", min: 0.5, max: 80, step: 0.5 },
 ];
 
 const HEART_SHADOW_SLIDERS: SliderDef[] = [

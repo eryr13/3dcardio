@@ -14,8 +14,9 @@ import type { VesselId, VesselState } from "../../types/anatomy";
 import type { CalcificationObject, StenosisObject, StentObject } from "../../types/object";
 import { getObjectsForVessel } from "../../types/object";
 import { HeartbeatGroup } from "./HeartbeatGroup";
-import { useCalcificationGeometry, useStentGeometry } from "./ObjectMeshes";
+import { useCalcificationGeometry, useStentGeometry, useStentLatticeGeometry } from "./ObjectMeshes";
 import { cineSceneBridge } from "./cineSceneBridge";
+import type { StentLatticeParams } from "./stentLatticeMesh";
 import type { CenterlinePoint } from "./vesselCenterline";
 import { applyStenosisDeformation } from "./vesselCenterline";
 import type { VesselGraph } from "./vesselGraph";
@@ -55,10 +56,6 @@ function createObjectSilhouetteMaterial(color: string) {
     depthWrite: false,
   });
 }
-
-/** リアルX線モードの深度ピール吸収係数。「石灰化は血管よりさらに暗く」「ステントは金属特有の強いコントラスト」 */
-const CALCIFICATION_ABSORPTION = 25;
-const STENT_ABSORPTION = 45;
 
 /** 心臓の輪郭を「内側を深度だけ塗って隠す」+「一回り拡大した裏面シェル」の2枚で表現する */
 function createHeartOutlineMaterials() {
@@ -127,6 +124,8 @@ export function CineAnatomyModel() {
   const objects = useCardioStore((s) => s.objects);
   const showHeartOutline = useCardioStore((s) => s.cine.showHeartOutline);
   const xrayMode = useCardioStore((s) => s.cine.xrayMode);
+  const xrayParams = useCardioStore((s) => s.cine.xrayParams);
+  const stentLatticeParams = useCardioStore((s) => s.stentLatticeParams);
 
   const built = useMemo(() => {
     const root = scene.clone(true);
@@ -244,6 +243,9 @@ export function CineAnatomyModel() {
     };
   }
 
+  // 石灰化は造影剤の有無に左右されず常時描画対象になる(vessels/vesselVisibleの
+  // 表示トグルとは無関係に、object.visibleだけで判定する)。Phase 7で造影剤フローを
+  // 実装する際も、この判定条件に造影剤の有無を混ぜないこと。
   const visibleCalcifications = objects.filter(
     (o): o is CalcificationObject => o.type === "calcification" && o.visible,
   );
@@ -267,7 +269,7 @@ export function CineAnatomyModel() {
             object={object}
             centerline={branch.points}
             xrayMode={xrayMode}
-            onRef={registerObjectMesh(object.id, CALCIFICATION_ABSORPTION)}
+            onRef={registerObjectMesh(object.id, xrayParams.calcificationAbsorption)}
           />
         );
       })}
@@ -281,7 +283,8 @@ export function CineAnatomyModel() {
             object={object}
             centerline={branch.points}
             xrayMode={xrayMode}
-            onRef={registerObjectMesh(object.id, STENT_ABSORPTION)}
+            stentLatticeParams={stentLatticeParams}
+            onRef={registerObjectMesh(object.id, xrayParams.stentAbsorption)}
           />
         );
       })}
@@ -303,10 +306,32 @@ function CineCalcificationBump({ object, centerline, xrayMode, onRef }: CineObje
   return <mesh geometry={geometry} material={material} visible={!xrayMode} ref={onRef} />;
 }
 
-function CineStentLattice({ object, centerline, xrayMode, onRef }: CineObjectMeshProps<StentObject>) {
-  const geometry = useStentGeometry(centerline, object);
+/**
+ * スキーマ表示は従来通り土台円筒(solid tube)のシルエットのまま変更しない。リアルX線
+ * モードだけは、ステントの網目(ストラット)構造がメインビューと全く同じ
+ * buildStentLatticeGeometry で生成した薄い網目ジオメトリを深度ピールの元にすることで、
+ * 「ストラット部分だけが高吸収体、網目の隙間は血管の濃度がそのまま見える」という
+ * 実際の透視像に近い見え方になる(隙間では前面/背面とも深度ピールにヒットせず、
+ * 厚み=0としてobjectDarknessが素通しになるため、追加のシェーダー分岐は不要)。
+ * この網目ジオメトリのメッシュ自体は常時非表示にし、深度ピール用プロキシの元
+ * (mesh.geometry+matrixWorld)としてのみ CineVesselThicknessEffect に登録する。
+ */
+function CineStentLattice({
+  object,
+  centerline,
+  xrayMode,
+  stentLatticeParams,
+  onRef,
+}: CineObjectMeshProps<StentObject> & { stentLatticeParams: StentLatticeParams }) {
+  const solidGeometry = useStentGeometry(centerline, object);
+  const latticeGeometry = useStentLatticeGeometry(centerline, object, stentLatticeParams);
   const material = useMemo(() => createObjectSilhouetteMaterial("#c8c8c8"), []);
-  return <mesh geometry={geometry} material={material} visible={!xrayMode} ref={onRef} />;
+  return (
+    <>
+      <mesh geometry={solidGeometry} material={material} visible={!xrayMode} />
+      <mesh geometry={latticeGeometry} visible={false} ref={onRef} />
+    </>
+  );
 }
 
 useGLTF.preload(REALISTIC_HEART_URL);

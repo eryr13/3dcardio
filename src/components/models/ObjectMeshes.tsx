@@ -2,8 +2,10 @@ import { useMemo } from "react";
 import type { VesselId } from "../../types/anatomy";
 import type { CalcificationObject, CardioObject, StentObject } from "../../types/object";
 import { getObjectsForVessel } from "../../types/object";
+import { useCardioStore } from "../../store/useCardioStore";
 import { buildCalcificationMesh } from "./calcificationMesh";
-import { buildStentGeometry } from "./stentLatticeMesh";
+import { buildStentGeometry, buildStentLatticeGeometry } from "./stentLatticeMesh";
+import type { StentLatticeParams } from "./stentLatticeMesh";
 import type { CenterlinePoint } from "./vesselCenterline";
 import type { VesselGraph } from "./vesselGraph";
 import { getBranch } from "./vesselGraph";
@@ -25,7 +27,10 @@ export function useCalcificationGeometry(centerline: CenterlinePoint[], object: 
   );
 }
 
-/** ステントの土台円筒ジオメトリをメモ化するフック(用途は useCalcificationGeometry と同じ)。 */
+/**
+ * ステントの土台円筒ジオメトリをメモ化するフック。シネビュー(CineAnatomyModel.tsx)は
+ * 現状この土台円筒のままX線風マテリアルで表示し続ける(網目ラティスはメインビューのみ)。
+ */
 export function useStentGeometry(centerline: CenterlinePoint[], object: StentObject) {
   return useMemo(
     () => buildStentGeometry(centerline, object),
@@ -35,9 +40,34 @@ export function useStentGeometry(centerline: CenterlinePoint[], object: StentObj
 }
 
 /**
- * ステントのマテリアル。ジオメトリ生成(useStentGeometry/buildStentGeometry、土台円筒)
- * とは意図的に別関数へ分離してある。今後ダイヤモンドカット状のストラット(網目構造)
- * メッシュに差し替える際は、この2つをそれぞれ独立に置き換えられる。
+ * ステントのダイヤモンドカット状ラティス(網目状ストラット)ジオメトリをメモ化するフック。
+ * 網目の密度・太さはデバッグパネルから調整できる `stentLatticeParams` に依存するため、
+ * それも依存配列に含める。
+ */
+export function useStentLatticeGeometry(
+  centerline: CenterlinePoint[],
+  object: StentObject,
+  params: StentLatticeParams,
+) {
+  return useMemo(
+    () => buildStentLatticeGeometry(centerline, object, params),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      centerline,
+      object.id,
+      object.position,
+      object.length,
+      object.diameter,
+      params.strutCount,
+      params.crossingsPerWire,
+      params.strutRadiusRatio,
+    ],
+  );
+}
+
+/**
+ * ステントのマテリアル。ジオメトリ生成(useStentLatticeGeometry/buildStentLatticeGeometry)
+ * とは意図的に別関数へ分離してある。
  */
 function StentMaterial() {
   return <meshStandardMaterial color={STENT_COLOR} metalness={0.75} roughness={0.3} />;
@@ -91,11 +121,13 @@ function CalcificationBump({ object, centerline }: { object: CalcificationObject
 }
 
 /**
- * 土台円筒(buildStentGeometry)にステント正式色のマテリアルを乗せて表示する。
- * ダイヤモンドカットのストラット(網目構造)メッシュはまだ未実装(土台円筒のみ)。
+ * ステントの網目(ストラット)ラティスジオメトリに金属マテリアルを乗せて表示する。
+ * 土台円筒(buildStentGeometry)自体はレンダリングせず、位置・向き・半径の計算基準
+ * としてのみ buildStentLatticeGeometry の内部で使う。
  */
 function StentLattice({ object, centerline }: { object: StentObject; centerline: CenterlinePoint[] }) {
-  const geometry = useStentGeometry(centerline, object);
+  const stentLatticeParams = useCardioStore((s) => s.stentLatticeParams);
+  const geometry = useStentLatticeGeometry(centerline, object, stentLatticeParams);
   return (
     <mesh geometry={geometry}>
       <StentMaterial />
