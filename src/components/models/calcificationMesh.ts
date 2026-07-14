@@ -3,7 +3,6 @@ import type { CalcificationObject } from "../../types/object";
 import type { CenterlinePoint } from "./vesselCenterline";
 import { sampleCenterline } from "./vesselCenterline";
 import { computeTubeFrame, mergeIndexedGeometries } from "./stentLatticeMesh";
-import { narrowingProfile } from "./stenosisPlaqueMesh";
 
 const ANGULAR_SEGMENTS = 28;
 const SMOOTHING_PASSES = 24;
@@ -53,15 +52,16 @@ interface ShellFrame {
   referenceAngles: number[];
   /** 各点の局所血管半径 */
   vesselRadii: number[];
-  /** 各点の長さ方向テーパー(区間中央で1、両端でほぼ0) */
-  tapers: number[];
 }
 
 /**
  * 石灰化シェル生成に必要な共通フレーム(点列・tangent/normal/binormal・血管半径・
- * 心筋方向基準角・長さ方向テーパー)をまとめて1回だけ計算する。外径シェル・
- * 内腔減算用シェルの両方がこの同じフレームを共有することで、2つのシェルが
- * 常にぴったり同じ位置・向きに揃う。
+ * 心筋方向基準角)をまとめて1回だけ計算する。外径シェル・内腔減算用シェルの両方が
+ * この同じフレームを共有することで、2つのシェルが常にぴったり同じ位置・向きに揃う。
+ *
+ * 狭窄と異なり、長さ方向のガウス窓テーパーは持たない(石灰化は区間全体で一様な
+ * 厚みの塊として扱う、という仕様のため)。そのため区間の両端は自然には閉じず、
+ * buildShell側で明示的な端キャップ(longitudinal cap)を生成して閉じる。
  */
 function buildShellFrame(
   centerline: CenterlinePoint[],
@@ -75,15 +75,12 @@ function buildShellFrame(
 
   const rawPoints: Vector3[] = [];
   const vesselRadii: number[] = [];
-  const tapers: number[] = [];
   const heartDirs: Vector3[] = [];
   for (let i = 0; i <= segmentCount; i++) {
     const t = tStart + ((tEnd - tStart) * i) / segmentCount;
     const sample = sampleCenterline(centerline, t);
     rawPoints.push(sample.point);
     vesselRadii.push(sample.radius);
-    const s = (t - object.position) / half;
-    tapers.push(narrowingProfile(s));
     const dir = heartCentroid.clone().sub(sample.point);
     heartDirs.push(dir.lengthSq() > 1e-10 ? dir.normalize() : sample.tangent.clone());
   }
@@ -108,7 +105,7 @@ function buildShellFrame(
     }
   }
 
-  return { points, tangents, normals, binormals, referenceAngles, vesselRadii, tapers };
+  return { points, tangents, normals, binormals, referenceAngles, vesselRadii };
 }
 
 /** 円周方向・長さ方向のグリッド状頂点群(radial grid)。grid[i][k]がi番目の断面のk番目の角度における頂点。 */
@@ -189,32 +186,68 @@ function triangulateRadialGrid(grid: RadialGrid): BufferGeometry {
 }
 
 /**
+ * 三角形1枚を、指定した目標法線(desiredNormal)を向くように頂点順序を自動調整して
+ * 追加する。手作業でインデックスの巻き順を数え上げるとキャップ形状のたびに間違え
+ * やすく、しかも巻き順は深度ピールのfront/back面カリング(=正しいシネX線減算)にも
+ * 直結するため、外積で実際の法線を計算し目標と逆なら頂点を入れ替える方式にして
+ * 常に正しい向きを保証する(各三角形が専用の頂点を持つため頂点共有はしない)。
+ */
+function pushOrientedTriangle(
+  positions: number[],
+  normalsOut: number[],
+  uvs: number[],
+  indices: number[],
+  pA: Vector3,
+  pB: Vector3,
+  pC: Vector3,
+  desiredNormal: Vector3,
+): void {
+  const ab = new Vector3().subVectors(pB, pA);
+  const ac = new Vector3().subVectors(pC, pA);
+  const faceNormal = new Vector3().crossVectors(ab, ac);
+  const baseIndex = positions.length / 3;
+  const [v0, v1, v2] = faceNormal.dot(desiredNormal) < 0 ? [pA, pC, pB] : [pA, pB, pC];
+  positions.push(v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z);
+  normalsOut.push(
+    desiredNormal.x,
+    desiredNormal.y,
+    desiredNormal.z,
+    desiredNormal.x,
+    desiredNormal.y,
+    desiredNormal.z,
+    desiredNormal.x,
+    desiredNormal.y,
+    desiredNormal.z,
+  );
+  uvs.push(0, 0, 1, 0, 0, 1);
+  indices.push(baseIndex, baseIndex + 1, baseIndex + 2);
+}
+
+/**
  * 円周方向の端(k=0またはk=segs)で、外径グリッドと内径グリッドを結ぶ帯状の
  * 「切断面」ジオメトリを作る。全周性(isFullRing)の場合は継ぎ目が無いため呼ばれない。
- * マテリアルはDoubleSideを前提にしており、法線の向き(裏表)はここでは厳密に
- * 作り込まない(狭い帯であり、見た目への影響は軽微なため)。
+ * 目標法線は、外径グリッドの隣接角度列との差分ベクトル(=弧から離れる方向)を使う
+ * (kIndex=0側は角度が1つ増える方向との差分、kIndex=segs側は1つ減る方向との差分を
+ * 取ることで、いずれも「弧の外側」を向くベクトルになる)。
  */
-function buildCapStrip(outerGrid: RadialGrid, innerGrid: RadialGrid, kIndex: number): BufferGeometry {
+function buildCircumferentialCap(outerGrid: RadialGrid, innerGrid: RadialGrid, kIndex: number): BufferGeometry {
   const n = outerGrid.positions.length;
+  const kNeighbor = kIndex === 0 ? kIndex + 1 : kIndex - 1;
   const positions: number[] = [];
   const normalsOut: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
 
-  for (let i = 0; i < n; i++) {
-    const capNormal = outerGrid.normals[i][kIndex].clone().negate();
-    const outerP = outerGrid.positions[i][kIndex];
-    const innerP = innerGrid.positions[i][kIndex];
-    positions.push(innerP.x, innerP.y, innerP.z, outerP.x, outerP.y, outerP.z);
-    normalsOut.push(capNormal.x, capNormal.y, capNormal.z, capNormal.x, capNormal.y, capNormal.z);
-    uvs.push(i / Math.max(1, n - 1), 0, i / Math.max(1, n - 1), 1);
-  }
   for (let i = 1; i < n; i++) {
-    const a = 2 * (i - 1);
-    const b = 2 * (i - 1) + 1;
-    const c = 2 * i + 1;
-    const d = 2 * i;
-    indices.push(a, b, c, a, c, d);
+    const awayDir = new Vector3().subVectors(outerGrid.positions[i][kIndex], outerGrid.positions[i][kNeighbor]);
+    const desiredNormal = awayDir.lengthSq() > 1e-10 ? awayDir.normalize() : outerGrid.normals[i][kIndex];
+
+    const outerA = outerGrid.positions[i - 1][kIndex];
+    const outerB = outerGrid.positions[i][kIndex];
+    const innerA = innerGrid.positions[i - 1][kIndex];
+    const innerB = innerGrid.positions[i][kIndex];
+    pushOrientedTriangle(positions, normalsOut, uvs, indices, innerA, outerA, outerB, desiredNormal);
+    pushOrientedTriangle(positions, normalsOut, uvs, indices, innerA, outerB, innerB, desiredNormal);
   }
 
   const geometry = new BufferGeometry();
@@ -226,10 +259,44 @@ function buildCapStrip(outerGrid: RadialGrid, innerGrid: RadialGrid, kIndex: num
 }
 
 /**
- * outerRadii/innerRadiiで指定した2枚のアーク面(+全周でなければ円周方向の端2枚の
- * キャップ)を組み合わせ、1つの閉じたシェルジオメトリにする。長さ方向は
- * frame.tapersにより区間の両端でouterRadii≒innerRadiiに収束させておくことで、
- * 明示的な端キャップ無しに自然に閉じる(狭窄の実装と同じ考え方)。
+ * 長さ方向の端(i=0またはi=n-1)で、外径グリッドと内径グリッドを結ぶ環状(または
+ * 弧状)の「端面キャップ」ジオメトリを作る。石灰化は狭窄と異なり長さ方向に
+ * テーパーしない(区間全体で一様な厚み)ため、区間の両端は自然には閉じず、
+ * このキャップが無いと中空の内部が見えてしまう。目標法線はtangent方向
+ * (iIndex=0側は近位方向=-tangent、iIndex=n-1側は遠位方向=+tangent)。
+ */
+function buildLongitudinalCap(frame: ShellFrame, outerGrid: RadialGrid, innerGrid: RadialGrid, iIndex: number): BufferGeometry {
+  const segs = outerGrid.positions[iIndex].length - 1;
+  const positions: number[] = [];
+  const normalsOut: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  const desiredNormal = iIndex === 0 ? frame.tangents[iIndex].clone().negate() : frame.tangents[iIndex].clone();
+
+  for (let k = 1; k <= segs; k++) {
+    const outerA = outerGrid.positions[iIndex][k - 1];
+    const outerB = outerGrid.positions[iIndex][k];
+    const innerA = innerGrid.positions[iIndex][k - 1];
+    const innerB = innerGrid.positions[iIndex][k];
+    pushOrientedTriangle(positions, normalsOut, uvs, indices, innerA, outerA, outerB, desiredNormal);
+    pushOrientedTriangle(positions, normalsOut, uvs, indices, innerA, outerB, innerB, desiredNormal);
+  }
+
+  const geometry = new BufferGeometry();
+  geometry.setIndex(indices);
+  geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new Float32BufferAttribute(normalsOut, 3));
+  geometry.setAttribute("uv", new Float32BufferAttribute(uvs, 2));
+  return geometry;
+}
+
+/**
+ * outerRadii/innerRadiiで指定した2枚のアーク面を、円周方向の端キャップ(全周で
+ * なければ)・長さ方向の端キャップ(常に、石灰化は長さ方向にテーパーしないため)で
+ * 閉じ、1つの閉じたシェルジオメトリにする。深度ピールのfront/backカリングが
+ * 正しく機能するには、これらのキャップも含めて全体が閉じた2-manifoldである必要が
+ * あるため、pushOrientedTriangleで巻き順を自動的に正しく揃えている。
  */
 function buildShell(
   frame: ShellFrame,
@@ -246,23 +313,27 @@ function buildShell(
   const outerGrid = buildRadialGrid(frame, outerRadii, orientationRad, halfSpanRad, angularSegments, noiseSeed);
   const innerGrid = buildRadialGrid(frame, innerRadii, orientationRad, halfSpanRad, angularSegments, noiseSeed);
 
-  const parts = [triangulateRadialGrid(outerGrid), triangulateRadialGrid(innerGrid)];
+  const parts = [
+    triangulateRadialGrid(outerGrid),
+    triangulateRadialGrid(innerGrid),
+    buildLongitudinalCap(frame, outerGrid, innerGrid, 0),
+    buildLongitudinalCap(frame, outerGrid, innerGrid, outerGrid.positions.length - 1),
+  ];
   if (!isFullRing) {
-    parts.push(buildCapStrip(outerGrid, innerGrid, 0));
-    parts.push(buildCapStrip(innerGrid, outerGrid, angularSegments));
+    parts.push(buildCircumferentialCap(outerGrid, innerGrid, 0));
+    parts.push(buildCircumferentialCap(outerGrid, innerGrid, angularSegments));
   }
   return mergeIndexedGeometries(parts);
 }
 
 export interface CalcificationGeometries {
-  /** メインビュー・シネスキーマ表示・シネX線の高吸収オブジェクトチャンネル用: 外側+内側成長分の完全なシェル */
+  /** メインビュー・シネスキーマ表示・シネX線の高吸収オブジェクトチャンネル用シェル */
   visual: BufferGeometry;
   /**
-   * シネX線モードの血管アキュムレータ減算専用: 外径=血管本来の半径(成長前)、
-   * 内径=内側成長後の内腔半径というシェル。外側への成長は内腔=造影剤の通り道と
-   * 無関係なので、この「内側成長分だけ」を表す独立した閉じたシェルを血管アキュムレータへ
-   * 符号反転(-1)で加算することで、内側への張り出し分だけを正しく差し引く
-   * (外側への成長は一切差し引かれない)。可視化はされない。
+   * シネX線モードの血管アキュムレータ減算専用: 外径=血管本来の半径、内径=内腔方向へ
+   * 成長した後の内腔半径というシェル。この「内腔方向への張り出し分だけ」を表す
+   * 独立した閉じたシェルを血管アキュムレータへ符号反転(-1)で加算することで、
+   * 内側への張り出し分だけを正しく差し引く。可視化はされない。
    */
   lumenNarrowing: BufferGeometry;
 }
@@ -277,9 +348,11 @@ export interface CalcificationGeometries {
  * ベクトルを tangent に直交する平面へ射影し、そのオブジェクトのローカルフレーム
  * (normal, binormal) での角度として定義する。血管の走行に応じて滑らかに変化する。
  *
- * 厚み(thickness、局所血管半径に対する比率)は、血管壁を基準に外側・内側の両方に
- * 同じ量だけ成長させる。長さ方向は狭窄と同じガウス窓プロファイルで区間の両端に
- * 向かって厚みが0に収束するため、不自然な切断面ができない。
+ * 厚み(thickness、局所血管半径に対する比率)は狭窄と同じ考え方で、外径(血管壁に
+ * 接する側、厚みを変えても変化しない)を基準に内腔方向だけへ成長させる
+ * (内径 = 外径 - 厚み)。狭窄と異なり、長さ方向のガウス窓テーパーは持たない
+ * (区間中央だけ厚く両端で先細りする「円錐」形状にならないよう、区間全体で
+ * 同じ厚みが一様に適用される。両端は明示的な端キャップで閉じる)。
  */
 export function buildCalcificationGeometry(
   centerline: CenterlinePoint[],
@@ -298,19 +371,17 @@ export function buildCalcificationGeometry(
   const orientationRad = (object.orientation * Math.PI) / 180;
   const thicknessFraction = Math.max(0, object.thickness) / 100;
 
-  const growthOuterRadii: number[] = [];
   const vesselRadii: number[] = [];
   const innerRadii: number[] = [];
   for (let i = 0; i < n; i++) {
     const R = frame.vesselRadii[i];
-    const growth = R * thicknessFraction * frame.tapers[i];
-    growthOuterRadii.push(R + growth);
+    const growth = R * thicknessFraction;
     vesselRadii.push(R);
     innerRadii.push(Math.max(R * MIN_LUMEN_RADIUS_RATIO, R - growth));
   }
 
   const noiseSeed = hashSeedFromId(object.id);
-  const visual = buildShell(frame, growthOuterRadii, innerRadii, angleSpanRad, orientationRad, ANGULAR_SEGMENTS, noiseSeed);
+  const visual = buildShell(frame, vesselRadii, innerRadii, angleSpanRad, orientationRad, ANGULAR_SEGMENTS, noiseSeed);
   const lumenNarrowing = buildShell(frame, vesselRadii, innerRadii, angleSpanRad, orientationRad, ANGULAR_SEGMENTS, null);
   return { visual, lumenNarrowing };
 }
