@@ -37,8 +37,20 @@ export interface StenosisObject extends ObjectBase {
 
 export interface CalcificationObject extends ObjectBase {
   type: "calcification";
-  /** 石灰化の厚み/密度の強さ。0〜100目安。 */
-  severity: number;
+  /**
+   * 石灰化の厚み(局所血管半径に対する比率、%)。血管壁を基準に外側(心筋方向の
+   * 組織側)・内側(内腔方向)の両方に同じ量だけ成長する。内側方向の成長分だけ
+   * 内腔が狭くなり、シネビューでは造影剤の厚みが減って血管が細く写る。
+   */
+  thickness: number;
+  /** 円周方向の広がり(度、0〜360)。0=石灰化なし、360=全周性(完全な筒)。 */
+  angleSpan: number;
+  /**
+   * 向き(度、0〜360)。血管の中心線tangentに直交する平面内で、0=心筋方向
+   * (心臓の重心を向く方向)、180=心外膜方向(その逆)を基準とした回転角。
+   * angleSpanで指定した弧は、この角度を中心に左右対称に広がる。
+   */
+  orientation: number;
 }
 
 export interface StentObject extends ObjectBase {

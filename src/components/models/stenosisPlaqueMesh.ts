@@ -24,7 +24,13 @@ const OUTER_RADIUS_MARGIN = 0.995;
 /** 狭窄率99%でも内腔半径が0(縮退ジオメトリ)にならないよう設ける下限(局所血管半径に対する比率)。 */
 const MIN_LUMEN_RADIUS_RATIO = 0.02;
 
-function narrowingProfile(s: number): number {
+/**
+ * 区間中央(s=0)で1、区間端(|s|=1、s=(t-position)/(length/2))でほぼ0に収束する
+ * ガウス関数的な減衰プロファイル。狭窄・石灰化のどちらも「区間の両端でなめらかに
+ * 厚みが0になる」という同じ見た目の要件を持つため、共通関数としてここからexportし
+ * calcificationMesh.tsからも再利用する。
+ */
+export function narrowingProfile(s: number): number {
   return Math.exp(-PROFILE_STEEPNESS * s * s);
 }
 

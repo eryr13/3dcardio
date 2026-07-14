@@ -253,14 +253,15 @@ export class CineVesselThicknessEffect extends Effect {
   private readonly objectProxySourceGeometry: (unknown | null)[] = [];
   private readonly objectAccumTarget: WebGLRenderTarget;
   /**
-   * 狭窄プラーク(外径/内径チューブ)のプロキシ。血管本体と全く同じ
-   * vesselAccumBackMaterial/vesselAccumFrontMaterialを共有するが、uSignを
-   * エントリごとに(通常の血管は+1固定、外径チューブは-1、内径チューブは+1に)
-   * 都度設定してから描画することで、専用のテクスチャチャンネルを増やさずに
-   * 「血管の生厚み - プラーク厚み」を同じ共有アキュムレータ内で計算する。
+   * 内腔を狭める要素(狭窄プラークの外径/内径チューブ、石灰化の内腔減算用シェル)の
+   * プロキシ。血管本体と全く同じvesselAccumBackMaterial/vesselAccumFrontMaterialを
+   * 共有するが、uSignをエントリごとに(通常の血管は+1固定、減算したい面は-1、
+   * 加算したい面は+1に)都度設定してから描画することで、専用のテクスチャチャンネルを
+   * 増やさずに「血管の生厚み - 内腔方向への張り出し厚み」を同じ共有アキュムレータ内で
+   * 計算する。
    */
-  private readonly plaqueProxies: (Mesh | null)[] = [];
-  private readonly plaqueProxySourceGeometry: (unknown | null)[] = [];
+  private readonly lumenSubtractionProxies: (Mesh | null)[] = [];
+  private readonly lumenSubtractionProxySourceGeometry: (unknown | null)[] = [];
   private viewCamera: Camera | null = null;
   /**
    * false の間は心臓の陰影を深度ピールごと丸ごとスキップし、冠動脈のみを表示する
@@ -407,13 +408,14 @@ export class CineVesselThicknessEffect extends Effect {
   }
 
   /**
-   * 狭窄プラーク(外径/内径チューブ)のプロキシ。material は vesselAccumBackMaterial を
-   * 仮に割り当てておくが、実際の描画直前に update() 側で back/front それぞれの
-   * material に差し替え、uSign もエントリごとに設定し直す。
+   * 内腔を狭める要素(狭窄の外径/内径チューブ、石灰化の内腔減算用シェル)のプロキシ。
+   * material は vesselAccumBackMaterial を仮に割り当てておくが、実際の描画直前に
+   * update() 側で back/front それぞれの material に差し替え、uSign もエントリごとに
+   * 設定し直す。
    */
-  private ensurePlaqueProxy(index: number, sourceMesh: Mesh): Mesh {
-    const existing = this.plaqueProxies[index];
-    if (existing && this.plaqueProxySourceGeometry[index] === sourceMesh.geometry) {
+  private ensureLumenSubtractionProxy(index: number, sourceMesh: Mesh): Mesh {
+    const existing = this.lumenSubtractionProxies[index];
+    if (existing && this.lumenSubtractionProxySourceGeometry[index] === sourceMesh.geometry) {
       return existing;
     }
     if (existing) this.peelScene.remove(existing);
@@ -422,8 +424,8 @@ export class CineVesselThicknessEffect extends Effect {
     proxy.matrixAutoUpdate = false;
     proxy.matrixWorldAutoUpdate = false;
     this.peelScene.add(proxy);
-    this.plaqueProxies[index] = proxy;
-    this.plaqueProxySourceGeometry[index] = sourceMesh.geometry;
+    this.lumenSubtractionProxies[index] = proxy;
+    this.lumenSubtractionProxySourceGeometry[index] = sourceMesh.geometry;
     return proxy;
   }
 
@@ -442,7 +444,7 @@ export class CineVesselThicknessEffect extends Effect {
     for (const proxy of this.objectProxies) {
       if (proxy) proxy.visible = proxy === active;
     }
-    for (const proxy of this.plaqueProxies) {
+    for (const proxy of this.lumenSubtractionProxies) {
       if (proxy) proxy.visible = proxy === active;
     }
   }
@@ -494,7 +496,7 @@ export class CineVesselThicknessEffect extends Effect {
       this.activateOnlyProxy(proxy);
 
       renderer.setRenderTarget(this.vesselAccumTarget);
-      // uSignは狭窄プラークのループ(下)で一時的に反転させることがあるため、
+      // uSignは内腔減算のループ(下)で一時的に反転させることがあるため、
       // 通常の血管では常に明示的に既定値(+1/-1)へ戻してから描画する。
       (this.vesselAccumBackMaterial.uniforms.uSign as Uniform).value = 1;
       (this.vesselAccumFrontMaterial.uniforms.uSign as Uniform).value = -1;
@@ -504,16 +506,18 @@ export class CineVesselThicknessEffect extends Effect {
       renderer.render(this.peelScene, camera);
     }
 
-    // 狭窄プラーク: 専用のテクスチャチャンネルを増やさず、血管と同じ共有ターゲットに
-    // 「外径チューブは符号反転(-1/+1)・内径チューブは通常符号(+1/-1)」で追加描画する。
-    // 加算合成の結果、この2枚の差(外径厚み-内径厚み=プラーク自身の厚み)がちょうど
-    // 血管の生厚みから差し引かれる形になり、プラークは造影剤の吸収に一切寄与しない
-    // (プラーク自体の吸収係数を別途持たない=非石灰化プラークがX線的にほぼ見えない
-    // という実際の臨床所見と一致する)。
-    handle.stenosisPlaqueProxies.forEach((entry, index) => {
+    // 内腔を狭める要素(狭窄の外径/内径チューブ、石灰化の内腔減算用シェル): 専用の
+    // テクスチャチャンネルを増やさず、血管と同じ共有ターゲットにentry.signで符号付けして
+    // 追加描画する。狭窄は外径チューブ(-1)+内径チューブ(+1)の2エントリで、その差
+    // (外径厚み-内径厚み=プラーク自身の厚み)がちょうど血管の生厚みから差し引かれる。
+    // 石灰化は内腔減算専用シェル(-1)の1エントリで、血管本来の半径と内腔半径の差
+    // (内側への張り出し量)だけが差し引かれ、外側への成長は一切差し引かれない。
+    // いずれも吸収係数を別途持たず、造影剤の厚みが減る形でのみ寄与する
+    // (非石灰化プラークがX線的にほぼ見えないという実際の臨床所見と一致する)。
+    handle.lumenSubtractionProxies.forEach((entry, index) => {
       anyVesselVisible = true;
 
-      const proxy = this.ensurePlaqueProxy(index, entry.mesh);
+      const proxy = this.ensureLumenSubtractionProxy(index, entry.mesh);
       proxy.matrixWorld.copy(entry.mesh.matrixWorld);
       this.activateOnlyProxy(proxy);
 
@@ -525,12 +529,12 @@ export class CineVesselThicknessEffect extends Effect {
       proxy.material = this.vesselAccumFrontMaterial;
       renderer.render(this.peelScene, camera);
     });
-    for (let i = handle.stenosisPlaqueProxies.length; i < this.plaqueProxies.length; i++) {
-      const stale = this.plaqueProxies[i];
+    for (let i = handle.lumenSubtractionProxies.length; i < this.lumenSubtractionProxies.length; i++) {
+      const stale = this.lumenSubtractionProxies[i];
       if (stale) {
         this.peelScene.remove(stale);
-        this.plaqueProxies[i] = null;
-        this.plaqueProxySourceGeometry[i] = null;
+        this.lumenSubtractionProxies[i] = null;
+        this.lumenSubtractionProxySourceGeometry[i] = null;
       }
     }
 
@@ -603,7 +607,7 @@ export class CineVesselThicknessEffect extends Effect {
     for (const proxy of this.objectProxies) {
       if (proxy) proxy.visible = true;
     }
-    for (const proxy of this.plaqueProxies) {
+    for (const proxy of this.lumenSubtractionProxies) {
       if (proxy) proxy.visible = true;
     }
 

@@ -102,6 +102,9 @@ export function ObjectPanel() {
   const [positionPercent, setPositionPercent] = useState(50);
   const [lengthPercent, setLengthPercent] = useState(8);
   const [severity, setSeverity] = useState(70);
+  const [thickness, setThickness] = useState(40);
+  const [angleSpan, setAngleSpan] = useState(120);
+  const [orientation, setOrientation] = useState(0);
   const [diameter, setDiameter] = useState(3);
   const [forkChoice, setForkChoice] = useState<ForkChoice | null>(null);
 
@@ -174,7 +177,7 @@ export function ObjectPanel() {
     if (type === "stenosis") {
       addObject({ ...base, type: "stenosis", severity });
     } else if (type === "calcification") {
-      addObject({ ...base, type: "calcification", severity });
+      addObject({ ...base, type: "calcification", thickness, angleSpan, orientation });
     } else {
       addObject({ ...base, type: "stent", diameter });
     }
@@ -264,19 +267,59 @@ export function ObjectPanel() {
           />
           <span className="opacity-value">{lengthPercent}%</span>
         </label>
-        {(type === "stenosis" || type === "calcification") && (
+        {type === "stenosis" && (
           <label className="object-form-row">
-            {type === "stenosis" ? "狭窄率" : "石灰化の強さ"}
+            狭窄率
             <input
               type="range"
               min={0}
-              max={type === "stenosis" ? 99 : 100}
+              max={99}
               step={1}
               value={severity}
               onChange={(e) => setSeverity(Number(e.target.value))}
             />
             <span className="opacity-value">{severity}%</span>
           </label>
+        )}
+        {type === "calcification" && (
+          <>
+            <label className="object-form-row">
+              厚み(血管半径比)
+              <input
+                type="range"
+                min={0}
+                max={150}
+                step={5}
+                value={thickness}
+                onChange={(e) => setThickness(Number(e.target.value))}
+              />
+              <span className="opacity-value">{thickness}%</span>
+            </label>
+            <label className="object-form-row">
+              角度(円周方向の広がり)
+              <input
+                type="range"
+                min={0}
+                max={360}
+                step={5}
+                value={angleSpan}
+                onChange={(e) => setAngleSpan(Number(e.target.value))}
+              />
+              <span className="opacity-value">{angleSpan}°</span>
+            </label>
+            <label className="object-form-row">
+              向き(0=心筋側、180=心外膜側)
+              <input
+                type="range"
+                min={0}
+                max={360}
+                step={5}
+                value={orientation}
+                onChange={(e) => setOrientation(Number(e.target.value))}
+              />
+              <span className="opacity-value">{orientation}°</span>
+            </label>
+          </>
         )}
         {type === "stent" && (
           <label className="object-form-row">
@@ -427,19 +470,59 @@ function ObjectListItem({
             <span className="opacity-value">{Math.round(object.length * 100)}%</span>
           </label>
 
-          {(object.type === "stenosis" || object.type === "calcification") && (
+          {object.type === "stenosis" && (
             <label className="object-item-size-row">
               重症度
               <input
                 type="range"
                 min={0}
-                max={object.type === "stenosis" ? 99 : 100}
+                max={99}
                 step={1}
                 value={object.severity}
                 onChange={(e) => onUpdate({ severity: Number(e.target.value) })}
               />
               <span className="opacity-value">{object.severity}%</span>
             </label>
+          )}
+          {object.type === "calcification" && (
+            <>
+              <label className="object-item-size-row">
+                厚み
+                <input
+                  type="range"
+                  min={0}
+                  max={150}
+                  step={5}
+                  value={object.thickness}
+                  onChange={(e) => onUpdate({ thickness: Number(e.target.value) })}
+                />
+                <span className="opacity-value">{object.thickness}%</span>
+              </label>
+              <label className="object-item-size-row">
+                角度
+                <input
+                  type="range"
+                  min={0}
+                  max={360}
+                  step={5}
+                  value={object.angleSpan}
+                  onChange={(e) => onUpdate({ angleSpan: Number(e.target.value) })}
+                />
+                <span className="opacity-value">{object.angleSpan}°</span>
+              </label>
+              <label className="object-item-size-row">
+                向き
+                <input
+                  type="range"
+                  min={0}
+                  max={360}
+                  step={5}
+                  value={object.orientation}
+                  onChange={(e) => onUpdate({ orientation: Number(e.target.value) })}
+                />
+                <span className="opacity-value">{object.orientation}°</span>
+              </label>
+            </>
           )}
           {object.type === "stent" && (
             <label className="object-item-size-row">

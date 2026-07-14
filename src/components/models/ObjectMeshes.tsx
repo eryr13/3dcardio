@@ -1,9 +1,11 @@
 import { useMemo } from "react";
+import { DoubleSide } from "three";
+import type { Vector3 } from "three";
 import type { VesselId } from "../../types/anatomy";
 import type { CalcificationObject, CardioObject, StenosisObject, StentObject } from "../../types/object";
 import { getObjectsForVessel } from "../../types/object";
 import { useCardioStore } from "../../store/useCardioStore";
-import { buildCalcificationMesh } from "./calcificationMesh";
+import { buildCalcificationGeometry } from "./calcificationMesh";
 import { buildStentGeometry, buildStentLatticeGeometry } from "./stentLatticeMesh";
 import type { StentLatticeParams } from "./stentLatticeMesh";
 import { buildStenosisPlaqueGeometry, STENOSIS_PLAQUE_COLOR } from "./stenosisPlaqueMesh";
@@ -16,15 +18,30 @@ export const CALCIFICATION_COLOR = "#e8c400";
 export const STENT_COLOR = "#9098a0";
 
 /**
- * 石灰化プラークのジオメトリをメモ化するフック。メインビュー・シネビューの
- * どちらも同じ形状データを使い、マテリアルだけ描画側で変えられるようにするため
- * ジオメトリ生成をコンポーネントから切り離してある。
+ * 石灰化プラークのジオメトリ(外側+内側成長分のシェル、内腔減算専用シェル)を
+ * メモ化するフック。メインビュー・シネビューのどちらも同じ形状データを使い、
+ * マテリアルだけ描画側で変えられるようにするためジオメトリ生成をコンポーネントから
+ * 切り離してある。heartCentroid(心臓メッシュの重心、簡易近似)は「向き」パラメータの
+ * 心筋方向/心外膜方向の基準に使う(calcificationMesh.ts参照)。
  */
-export function useCalcificationGeometry(centerline: CenterlinePoint[], object: CalcificationObject) {
+export function useCalcificationGeometry(
+  centerline: CenterlinePoint[],
+  object: CalcificationObject,
+  heartCentroid: Vector3,
+) {
   return useMemo(
-    () => buildCalcificationMesh(centerline, object),
+    () => buildCalcificationGeometry(centerline, object, heartCentroid),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [centerline, object.id, object.position, object.length, object.severity],
+    [
+      centerline,
+      object.id,
+      object.position,
+      object.length,
+      object.thickness,
+      object.angleSpan,
+      object.orientation,
+      heartCentroid,
+    ],
   );
 }
 
@@ -90,6 +107,8 @@ interface ObjectMeshesProps {
   vesselId: VesselId;
   graph: VesselGraph;
   objects: CardioObject[];
+  /** 心臓メッシュの重心。石灰化の「向き」パラメータの心筋方向/心外膜方向の基準に使う。 */
+  heartCentroid: Vector3;
 }
 
 /**
@@ -101,7 +120,7 @@ interface ObjectMeshesProps {
  * (CineAnatomyModel.tsx 参照)。各オブジェクトは branchId で指定された枝の中心線
  * (本幹または側枝)を使って描画するため、存在しない枝を参照するオブジェクトは無視する。
  */
-export function ObjectMeshes({ vesselId, graph, objects }: ObjectMeshesProps) {
+export function ObjectMeshes({ vesselId, graph, objects, heartCentroid }: ObjectMeshesProps) {
   const vesselObjects = useMemo(() => getObjectsForVessel(objects, vesselId), [objects, vesselId]);
 
   return (
@@ -118,7 +137,9 @@ export function ObjectMeshes({ vesselId, graph, objects }: ObjectMeshesProps) {
         .map((object) => {
           const branch = getBranch(graph, object.branchId);
           if (!branch) return null;
-          return <CalcificationBump key={object.id} object={object} centerline={branch.points} />;
+          return (
+            <CalcificationBump key={object.id} object={object} centerline={branch.points} heartCentroid={heartCentroid} />
+          );
         })}
       {vesselObjects
         .filter((o): o is StentObject => o.type === "stent" && o.visible)
@@ -144,11 +165,21 @@ function StenosisPlaque({ object, centerline }: { object: StenosisObject; center
   );
 }
 
-function CalcificationBump({ object, centerline }: { object: CalcificationObject; centerline: CenterlinePoint[] }) {
-  const geometry = useCalcificationGeometry(centerline, object);
+function CalcificationBump({
+  object,
+  centerline,
+  heartCentroid,
+}: {
+  object: CalcificationObject;
+  centerline: CenterlinePoint[];
+  heartCentroid: Vector3;
+}) {
+  const { visual } = useCalcificationGeometry(centerline, object, heartCentroid);
   return (
-    <mesh geometry={geometry}>
-      <meshStandardMaterial color={CALCIFICATION_COLOR} roughness={0.6} metalness={0.05} />
+    <mesh geometry={visual}>
+      {/* 部分円筒シェルの円周方向の端キャップは法線の裏表を厳密に作り込んでいないため、
+          DoubleSideにしてどの角度から見ても表示されるようにする。 */}
+      <meshStandardMaterial color={CALCIFICATION_COLOR} roughness={0.6} metalness={0.05} side={DoubleSide} />
     </mesh>
   );
 }

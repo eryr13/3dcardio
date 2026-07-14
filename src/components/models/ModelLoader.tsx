@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Html, Line, useGLTF } from "@react-three/drei";
-import type { Vector3 } from "three";
+import { Box3, Vector3 } from "three";
 import type { BufferGeometry, Mesh, MeshStandardMaterial } from "three";
 import type { AnatomyDisplayState, VesselId, ModelSource } from "../../types/anatomy";
 import type { StentObject } from "../../types/object";
@@ -199,6 +199,15 @@ function GltfAnatomyModels({ url }: { url: string }) {
     return map;
   }, [scene]);
 
+  // 心臓メッシュの重心(簡易近似)。石灰化の「向き」パラメータの心筋方向/心外膜方向の
+  // 基準に使う(冠動脈は心外膜表面を走行するため、重心方向でも実用上十分な近似になる)。
+  // 見つからない場合は原点にフォールバックする。
+  const heartCentroid = useMemo(() => {
+    const heartMesh = meshesByName.get("HEART");
+    if (!heartMesh) return new Vector3(0, 0, 0);
+    return new Box3().setFromObject(heartMesh).getCenter(new Vector3());
+  }, [meshesByName]);
+
   // 中心線グラフ(本幹+側枝)は scripts/extract_centerlines.py が事前生成した
   // src/data/centerlines.json をそのまま使う。メッシュには依存しないため useMemo は不要。
   const graphs = useMemo(() => {
@@ -349,7 +358,9 @@ function GltfAnatomyModels({ url }: { url: string }) {
       {VESSEL_IDS.map((id) => {
         const graph = graphs.get(id);
         if (!graph || !vessels[id]?.visible) return null;
-        return <ObjectMeshes key={id} vesselId={id} graph={graph} objects={objects} />;
+        return (
+          <ObjectMeshes key={id} vesselId={id} graph={graph} objects={objects} heartCentroid={heartCentroid} />
+        );
       })}
 
       {debugShowCenterlines &&

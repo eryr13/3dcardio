@@ -28,7 +28,9 @@ function calcification(overrides: Partial<CalcificationObject> = {}): Calcificat
     branchId: "RCA-main",
     position: 0.5,
     length: 0.1,
-    severity: 50,
+    thickness: 40,
+    angleSpan: 120,
+    orientation: 0,
     visible: true,
     ...overrides,
   };
@@ -93,7 +95,7 @@ describe("getStenosisSeverityAt", () => {
 
   it("ignores non-stenosis objects", () => {
     const objects: CardioObject[] = [
-      calcification({ position: 0.5, length: 0.4, severity: 90 }),
+      calcification({ position: 0.5, length: 0.4 }),
       stent({ position: 0.5, length: 0.4 }),
     ];
     expect(getStenosisSeverityAt(objects, "RCA", "RCA-main", 0.5)).toBe(0);

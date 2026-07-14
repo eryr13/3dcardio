@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
-import { BackSide, Mesh, MeshBasicMaterial, MultiplyBlending, NormalBlending } from "three";
+import { BackSide, Box3, Mesh, MeshBasicMaterial, MultiplyBlending, NormalBlending, Vector3 } from "three";
 import { useCardioStore } from "../../store/useCardioStore";
 import type { VesselId, VesselState } from "../../types/anatomy";
 import type { CalcificationObject, StenosisObject, StentObject } from "../../types/object";
 import { HeartbeatGroup } from "./HeartbeatGroup";
 import { useCalcificationGeometry, useStenosisPlaqueGeometry, useStentGeometry, useStentLatticeGeometry } from "./ObjectMeshes";
 import { cineSceneBridge } from "./cineSceneBridge";
-import type { StenosisPlaqueProxyEntry } from "./cineSceneBridge";
+import type { LumenSubtractionProxyEntry } from "./cineSceneBridge";
 import type { StentLatticeParams } from "./stentLatticeMesh";
 import type { CenterlinePoint } from "./vesselCenterline";
 import type { VesselGraph } from "./vesselGraph";
@@ -132,6 +132,14 @@ export function CineAnatomyModel() {
     return { root, meshesByName, graphs, outline };
   }, [scene]);
 
+  // 心臓メッシュの重心(簡易近似)。石灰化の「向き」パラメータの心筋方向/心外膜方向の
+  // 基準に使う(ModelLoader.tsxのメインビュー側と同じ考え方)。
+  const heartCentroid = useMemo(() => {
+    const heartMesh = built.meshesByName.get("HEART");
+    if (!heartMesh) return new Vector3(0, 0, 0);
+    return new Box3().setFromObject(heartMesh).getCenter(new Vector3());
+  }, [built]);
+
   useEffect(() => {
     const vesselMeshes: Partial<Record<VesselId, Mesh>> = {};
     for (const id of VESSEL_IDS) {
@@ -189,24 +197,24 @@ export function CineAnatomyModel() {
     };
   }
 
-  // 狭窄プラークの外径/内径チューブメッシュへの参照を集約し、CineVesselThicknessEffectが
-  // 血管本体の共有アキュムレータへ「外径は符号反転・内径は通常符号」で加算するのに使う
-  // (cineSceneBridge.stenosisPlaqueProxies)。1件の狭窄オブジェクトにつきouter/innerの
-  // 2キーで登録する。
-  const plaqueMeshRefsById = useRef(new Map<string, { mesh: Mesh; sign: 1 | -1 }>());
+  // 内腔を狭める要素(狭窄の外径/内径チューブ、石灰化の内腔減算用シェル)のメッシュへの
+  // 参照を集約し、CineVesselThicknessEffectが血管本体の共有アキュムレータへ符号付きで
+  // 加算するのに使う(cineSceneBridge.lumenSubtractionProxies)。狭窄は1オブジェクトに
+  // つきouter/innerの2キー、石灰化はnarrowingの1キーで登録する。
+  const lumenSubtractionMeshRefsById = useRef(new Map<string, { mesh: Mesh; sign: 1 | -1 }>());
 
-  function syncStenosisPlaqueProxies() {
+  function syncLumenSubtractionProxies() {
     if (!cineSceneBridge.current) return;
-    cineSceneBridge.current.stenosisPlaqueProxies = Array.from(plaqueMeshRefsById.current.entries()).map(
-      ([id, entry]): StenosisPlaqueProxyEntry => ({ id, mesh: entry.mesh, sign: entry.sign }),
+    cineSceneBridge.current.lumenSubtractionProxies = Array.from(lumenSubtractionMeshRefsById.current.entries()).map(
+      ([id, entry]): LumenSubtractionProxyEntry => ({ id, mesh: entry.mesh, sign: entry.sign }),
     );
   }
 
-  function registerPlaqueMesh(id: string, sign: 1 | -1) {
+  function registerLumenSubtractionMesh(id: string, sign: 1 | -1) {
     return (mesh: Mesh | null) => {
-      if (mesh) plaqueMeshRefsById.current.set(id, { mesh, sign });
-      else plaqueMeshRefsById.current.delete(id);
-      syncStenosisPlaqueProxies();
+      if (mesh) lumenSubtractionMeshRefsById.current.set(id, { mesh, sign });
+      else lumenSubtractionMeshRefsById.current.delete(id);
+      syncLumenSubtractionProxies();
     };
   }
 
@@ -237,8 +245,8 @@ export function CineAnatomyModel() {
             object={object}
             centerline={branch.points}
             xrayMode={xrayMode}
-            onRefOuter={registerPlaqueMesh(`${object.id}-outer`, -1)}
-            onRefInner={registerPlaqueMesh(`${object.id}-inner`, 1)}
+            onRefOuter={registerLumenSubtractionMesh(`${object.id}-outer`, -1)}
+            onRefInner={registerLumenSubtractionMesh(`${object.id}-inner`, 1)}
           />
         );
       })}
@@ -251,8 +259,10 @@ export function CineAnatomyModel() {
             key={object.id}
             object={object}
             centerline={branch.points}
+            heartCentroid={heartCentroid}
             xrayMode={xrayMode}
             onRef={registerObjectMesh(object.id, xrayParams.calcificationAbsorption)}
+            onRefNarrowing={registerLumenSubtractionMesh(`${object.id}-narrowing`, -1)}
           />
         );
       })}
@@ -283,10 +293,31 @@ interface CineObjectMeshProps<T> {
   onRef: (mesh: Mesh | null) => void;
 }
 
-function CineCalcificationBump({ object, centerline, xrayMode, onRef }: CineObjectMeshProps<CalcificationObject>) {
-  const geometry = useCalcificationGeometry(centerline, object);
+/**
+ * スキーマ表示は結合ジオメトリ(外側+内側成長分のシェル)をシルエットマテリアルで
+ * 表示する(石灰化の高吸収を表す既存の「オブジェクト」チャンネルはこの同じジオメトリを
+ * onRef経由で登録する)。加えて、内腔減算専用シェル(narrowing、常時非表示)を
+ * onRefNarrowing経由で登録し、内側への張り出し分だけ血管の生厚みから差し引く。
+ */
+function CineCalcificationBump({
+  object,
+  centerline,
+  heartCentroid,
+  xrayMode,
+  onRef,
+  onRefNarrowing,
+}: CineObjectMeshProps<CalcificationObject> & {
+  heartCentroid: Vector3;
+  onRefNarrowing: (mesh: Mesh | null) => void;
+}) {
+  const { visual, lumenNarrowing } = useCalcificationGeometry(centerline, object, heartCentroid);
   const material = useMemo(() => createObjectSilhouetteMaterial("#dcdcdc"), []);
-  return <mesh geometry={geometry} material={material} visible={!xrayMode} ref={onRef} />;
+  return (
+    <>
+      <mesh geometry={visual} material={material} visible={!xrayMode} ref={onRef} />
+      <mesh geometry={lumenNarrowing} visible={false} ref={onRefNarrowing} />
+    </>
+  );
 }
 
 /**
