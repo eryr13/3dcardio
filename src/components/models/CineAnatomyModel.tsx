@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
-import { BackSide, BufferGeometry, Mesh, MeshBasicMaterial, MultiplyBlending, NormalBlending } from "three";
+import { BackSide, Mesh, MeshBasicMaterial, MultiplyBlending, NormalBlending } from "three";
 import { useCardioStore } from "../../store/useCardioStore";
 import type { VesselId, VesselState } from "../../types/anatomy";
 import type { CalcificationObject, StenosisObject, StentObject } from "../../types/object";
-import { getObjectsForVessel } from "../../types/object";
 import { HeartbeatGroup } from "./HeartbeatGroup";
-import { useCalcificationGeometry, useStentGeometry, useStentLatticeGeometry } from "./ObjectMeshes";
+import { useCalcificationGeometry, useStenosisPlaqueGeometry, useStentGeometry, useStentLatticeGeometry } from "./ObjectMeshes";
 import { cineSceneBridge } from "./cineSceneBridge";
+import type { StenosisPlaqueProxyEntry } from "./cineSceneBridge";
 import type { StentLatticeParams } from "./stentLatticeMesh";
 import type { CenterlinePoint } from "./vesselCenterline";
-import { applyStenosisDeformation } from "./vesselCenterline";
 import type { VesselGraph } from "./vesselGraph";
 import { getBranch, getVesselGraph } from "./vesselGraph";
 
@@ -101,14 +100,10 @@ export function CineAnatomyModel() {
     });
 
     const graphs = new Map<VesselId, VesselGraph>();
-    const originalGeometries = new Map<VesselId, BufferGeometry>();
     for (const id of VESSEL_IDS) {
       const mesh = meshesByName.get(id);
       if (!mesh) continue;
       graphs.set(id, getVesselGraph(id));
-      // 狭窄変形前の素のジオメトリを保持しておく(scene.clone(true)由来でメインビューと
-      // 参照を共有しているが、ここでは読み取り専用に使い、変形結果は別途複製して割り当てる)。
-      originalGeometries.set(id, mesh.geometry);
       mesh.material = createVesselMaterial();
     }
 
@@ -134,23 +129,8 @@ export function CineAnatomyModel() {
       outline = { depthMesh, rimMesh };
     }
 
-    return { root, meshesByName, graphs, originalGeometries, outline };
+    return { root, meshesByName, graphs, outline };
   }, [scene]);
-
-  // Phase 6: 狭窄オブジェクトに基づいてジオメトリを変形する。built(=scene.clone(true)由来の
-  // cine専用複製)のmesh.geometryだけを差し替えるため、メインビュー側には一切影響しない。
-  useEffect(() => {
-    for (const id of VESSEL_IDS) {
-      const mesh = built.meshesByName.get(id);
-      const graph = built.graphs.get(id);
-      const originalGeometry = built.originalGeometries.get(id);
-      if (!mesh || !graph || !originalGeometry) continue;
-      const stenoses = getObjectsForVessel(objects, id).filter(
-        (o): o is StenosisObject => o.type === "stenosis",
-      );
-      mesh.geometry = applyStenosisDeformation(originalGeometry, graph, stenoses);
-    }
-  }, [built, objects]);
 
   useEffect(() => {
     const vesselMeshes: Partial<Record<VesselId, Mesh>> = {};
@@ -209,9 +189,31 @@ export function CineAnatomyModel() {
     };
   }
 
-  // 石灰化は造影剤の有無に左右されず常時描画対象になる(vessels/vesselVisibleの
+  // 狭窄プラークの外径/内径チューブメッシュへの参照を集約し、CineVesselThicknessEffectが
+  // 血管本体の共有アキュムレータへ「外径は符号反転・内径は通常符号」で加算するのに使う
+  // (cineSceneBridge.stenosisPlaqueProxies)。1件の狭窄オブジェクトにつきouter/innerの
+  // 2キーで登録する。
+  const plaqueMeshRefsById = useRef(new Map<string, { mesh: Mesh; sign: 1 | -1 }>());
+
+  function syncStenosisPlaqueProxies() {
+    if (!cineSceneBridge.current) return;
+    cineSceneBridge.current.stenosisPlaqueProxies = Array.from(plaqueMeshRefsById.current.entries()).map(
+      ([id, entry]): StenosisPlaqueProxyEntry => ({ id, mesh: entry.mesh, sign: entry.sign }),
+    );
+  }
+
+  function registerPlaqueMesh(id: string, sign: 1 | -1) {
+    return (mesh: Mesh | null) => {
+      if (mesh) plaqueMeshRefsById.current.set(id, { mesh, sign });
+      else plaqueMeshRefsById.current.delete(id);
+      syncStenosisPlaqueProxies();
+    };
+  }
+
+  // 石灰化・狭窄は造影剤の有無に左右されず常時描画対象になる(vessels/vesselVisibleの
   // 表示トグルとは無関係に、object.visibleだけで判定する)。Phase 7で造影剤フローを
   // 実装する際も、この判定条件に造影剤の有無を混ぜないこと。
+  const visibleStenoses = objects.filter((o): o is StenosisObject => o.type === "stenosis" && o.visible);
   const visibleCalcifications = objects.filter(
     (o): o is CalcificationObject => o.type === "calcification" && o.visible,
   );
@@ -225,6 +227,21 @@ export function CineAnatomyModel() {
     >
       <primitive object={built.root} />
 
+      {visibleStenoses.map((object) => {
+        const graph = built.graphs.get(object.vesselId);
+        const branch = graph && getBranch(graph, object.branchId);
+        if (!branch) return null;
+        return (
+          <CineStenosisPlaque
+            key={object.id}
+            object={object}
+            centerline={branch.points}
+            xrayMode={xrayMode}
+            onRefOuter={registerPlaqueMesh(`${object.id}-outer`, -1)}
+            onRefInner={registerPlaqueMesh(`${object.id}-inner`, 1)}
+          />
+        );
+      })}
       {visibleCalcifications.map((object) => {
         const graph = built.graphs.get(object.vesselId);
         const branch = graph && getBranch(graph, object.branchId);
@@ -270,6 +287,38 @@ function CineCalcificationBump({ object, centerline, xrayMode, onRef }: CineObje
   const geometry = useCalcificationGeometry(centerline, object);
   const material = useMemo(() => createObjectSilhouetteMaterial("#dcdcdc"), []);
   return <mesh geometry={geometry} material={material} visible={!xrayMode} ref={onRef} />;
+}
+
+/**
+ * スキーマ表示は結合ジオメトリ(外径+内径チューブ)をシルエットマテリアルで表示する
+ * (石灰化・ステントと同じ扱い)。リアルX線モードでは、この結合ジオメトリではなく
+ * outer/inner を独立したメッシュとして常時非表示のまま登録し、
+ * CineVesselThicknessEffectが血管本体の共有アキュムレータへの加減算に使う
+ * (mainImage側でのブラー処理は血管本体の生厚みに対して行われるため、outer/innerの
+ * 描画用メッシュ自体はxrayMode中も一切visible=trueにしない)。
+ */
+function CineStenosisPlaque({
+  object,
+  centerline,
+  xrayMode,
+  onRefOuter,
+  onRefInner,
+}: {
+  object: StenosisObject;
+  centerline: CenterlinePoint[];
+  xrayMode: boolean;
+  onRefOuter: (mesh: Mesh | null) => void;
+  onRefInner: (mesh: Mesh | null) => void;
+}) {
+  const { merged, outer, inner } = useStenosisPlaqueGeometry(centerline, object);
+  const material = useMemo(() => createObjectSilhouetteMaterial("#e0d4b0"), []);
+  return (
+    <>
+      <mesh geometry={merged} material={material} visible={!xrayMode} />
+      <mesh geometry={outer} visible={false} ref={onRefOuter} />
+      <mesh geometry={inner} visible={false} ref={onRefInner} />
+    </>
+  );
 }
 
 /**

@@ -252,6 +252,15 @@ export class CineVesselThicknessEffect extends Effect {
   private readonly objectProxies: (Mesh | null)[] = [];
   private readonly objectProxySourceGeometry: (unknown | null)[] = [];
   private readonly objectAccumTarget: WebGLRenderTarget;
+  /**
+   * 狭窄プラーク(外径/内径チューブ)のプロキシ。血管本体と全く同じ
+   * vesselAccumBackMaterial/vesselAccumFrontMaterialを共有するが、uSignを
+   * エントリごとに(通常の血管は+1固定、外径チューブは-1、内径チューブは+1に)
+   * 都度設定してから描画することで、専用のテクスチャチャンネルを増やさずに
+   * 「血管の生厚み - プラーク厚み」を同じ共有アキュムレータ内で計算する。
+   */
+  private readonly plaqueProxies: (Mesh | null)[] = [];
+  private readonly plaqueProxySourceGeometry: (unknown | null)[] = [];
   private viewCamera: Camera | null = null;
   /**
    * false の間は心臓の陰影を深度ピールごと丸ごとスキップし、冠動脈のみを表示する
@@ -398,6 +407,27 @@ export class CineVesselThicknessEffect extends Effect {
   }
 
   /**
+   * 狭窄プラーク(外径/内径チューブ)のプロキシ。material は vesselAccumBackMaterial を
+   * 仮に割り当てておくが、実際の描画直前に update() 側で back/front それぞれの
+   * material に差し替え、uSign もエントリごとに設定し直す。
+   */
+  private ensurePlaqueProxy(index: number, sourceMesh: Mesh): Mesh {
+    const existing = this.plaqueProxies[index];
+    if (existing && this.plaqueProxySourceGeometry[index] === sourceMesh.geometry) {
+      return existing;
+    }
+    if (existing) this.peelScene.remove(existing);
+    const proxy = new Mesh(sourceMesh.geometry, this.vesselAccumBackMaterial);
+    proxy.frustumCulled = false;
+    proxy.matrixAutoUpdate = false;
+    proxy.matrixWorldAutoUpdate = false;
+    this.peelScene.add(proxy);
+    this.plaqueProxies[index] = proxy;
+    this.plaqueProxySourceGeometry[index] = sourceMesh.geometry;
+    return proxy;
+  }
+
+  /**
    * peelSceneには血管3本+心臓+オブジェクトのプロキシが常駐しているため、1回のレンダーパスで
    * 「今measureしたい1つ」以外が写り込むと深度が汚染される(特に心臓は他の全プロキシより
    * 大きく、混入すると血管の厚みが大きく狂う)。パスの直前に対象以外を全てvisible=falseに
@@ -410,6 +440,9 @@ export class CineVesselThicknessEffect extends Effect {
     }
     if (this.heartProxy) this.heartProxy.visible = this.heartProxy === active;
     for (const proxy of this.objectProxies) {
+      if (proxy) proxy.visible = proxy === active;
+    }
+    for (const proxy of this.plaqueProxies) {
       if (proxy) proxy.visible = proxy === active;
     }
   }
@@ -461,11 +494,46 @@ export class CineVesselThicknessEffect extends Effect {
       this.activateOnlyProxy(proxy);
 
       renderer.setRenderTarget(this.vesselAccumTarget);
+      // uSignは狭窄プラークのループ(下)で一時的に反転させることがあるため、
+      // 通常の血管では常に明示的に既定値(+1/-1)へ戻してから描画する。
+      (this.vesselAccumBackMaterial.uniforms.uSign as Uniform).value = 1;
+      (this.vesselAccumFrontMaterial.uniforms.uSign as Uniform).value = -1;
       proxy.material = this.vesselAccumBackMaterial;
       renderer.render(this.peelScene, camera);
       proxy.material = this.vesselAccumFrontMaterial;
       renderer.render(this.peelScene, camera);
     }
+
+    // 狭窄プラーク: 専用のテクスチャチャンネルを増やさず、血管と同じ共有ターゲットに
+    // 「外径チューブは符号反転(-1/+1)・内径チューブは通常符号(+1/-1)」で追加描画する。
+    // 加算合成の結果、この2枚の差(外径厚み-内径厚み=プラーク自身の厚み)がちょうど
+    // 血管の生厚みから差し引かれる形になり、プラークは造影剤の吸収に一切寄与しない
+    // (プラーク自体の吸収係数を別途持たない=非石灰化プラークがX線的にほぼ見えない
+    // という実際の臨床所見と一致する)。
+    handle.stenosisPlaqueProxies.forEach((entry, index) => {
+      anyVesselVisible = true;
+
+      const proxy = this.ensurePlaqueProxy(index, entry.mesh);
+      proxy.matrixWorld.copy(entry.mesh.matrixWorld);
+      this.activateOnlyProxy(proxy);
+
+      renderer.setRenderTarget(this.vesselAccumTarget);
+      (this.vesselAccumBackMaterial.uniforms.uSign as Uniform).value = entry.sign;
+      (this.vesselAccumFrontMaterial.uniforms.uSign as Uniform).value = -entry.sign;
+      proxy.material = this.vesselAccumBackMaterial;
+      renderer.render(this.peelScene, camera);
+      proxy.material = this.vesselAccumFrontMaterial;
+      renderer.render(this.peelScene, camera);
+    });
+    for (let i = handle.stenosisPlaqueProxies.length; i < this.plaqueProxies.length; i++) {
+      const stale = this.plaqueProxies[i];
+      if (stale) {
+        this.peelScene.remove(stale);
+        this.plaqueProxies[i] = null;
+        this.plaqueProxySourceGeometry[i] = null;
+      }
+    }
+
     this.uniforms.get("uVesselAccum")!.value = anyVesselVisible ? this.vesselAccumTarget.texture : null;
 
     const heartMesh = handle.heartMesh;
@@ -533,6 +601,9 @@ export class CineVesselThicknessEffect extends Effect {
     }
     if (this.heartProxy) this.heartProxy.visible = true;
     for (const proxy of this.objectProxies) {
+      if (proxy) proxy.visible = true;
+    }
+    for (const proxy of this.plaqueProxies) {
       if (proxy) proxy.visible = true;
     }
 

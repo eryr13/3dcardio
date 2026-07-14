@@ -1,7 +1,5 @@
-import { BufferGeometry, Vector3 } from "three";
+import { Vector3 } from "three";
 import type { VesselId } from "../../types/anatomy";
-import type { StenosisObject } from "../../types/object";
-import type { VesselGraph } from "./vesselGraph";
 import { getMainTrunk, getVesselGraph } from "./vesselGraph";
 
 export interface CenterlinePoint {
@@ -63,76 +61,4 @@ export function sampleCenterline(centerline: CenterlinePoint[], t: number): Cent
   const radius = p0.radius + (p1.radius - p0.radius) * frac;
   const tangent = p1.position.clone().sub(p0.position).normalize();
   return { point, radius, tangent };
-}
-
-/**
- * 血管ジオメトリを複製し、指定した狭窄群に基づいて断面半径をガウス関数的に
- * 滑らかに絞る。共有GLBジオメトリを直接書き換えないよう必ず複製する
- * (attachProximityAttribute と同じ方針)。狭窄が無ければ複製せず元のジオメトリを
- * そのまま返す。
- *
- * 各頂点は、その頂点に最も近い点を持つ枝(本幹または側枝)に属するとみなし、
- * その枝上の最近傍点のtをもとに狭窄の重なりを判定する(かつてはメッシュ頂点の
- * ローカルY座標比率から中心線tを近似していたが、中心線がグラフ構造化された
- * ことで単一の枝に対応しなくなったため、実際の3D最近傍探索に置き換えた。
- * 中心線がグラフになる前から残っていたY比率近似より正確になる副次効果もある)。
- */
-export function applyStenosisDeformation(
-  geometry: BufferGeometry,
-  graph: VesselGraph,
-  stenoses: StenosisObject[],
-): BufferGeometry {
-  const visibleStenoses = stenoses.filter((s) => s.visible);
-  if (visibleStenoses.length === 0) return geometry;
-
-  const targetBranchIds = new Set(visibleStenoses.map((s) => s.branchId));
-  const targetBranches = graph.branches.filter((b) => targetBranchIds.has(b.id));
-  if (targetBranches.length === 0) return geometry;
-
-  const deformed = geometry.index ? geometry.toNonIndexed() : geometry.clone();
-  const position = deformed.getAttribute("position");
-  const vertex = new Vector3();
-
-  for (let i = 0; i < position.count; i++) {
-    vertex.set(position.getX(i), position.getY(i), position.getZ(i));
-
-    let nearestBranchId: string | null = null;
-    let nearestT = 0;
-    let nearestDistSq = Infinity;
-    for (const branch of targetBranches) {
-      for (const p of branch.points) {
-        const d = p.position.distanceToSquared(vertex);
-        if (d < nearestDistSq) {
-          nearestDistSq = d;
-          nearestBranchId = branch.id;
-          nearestT = p.t;
-        }
-      }
-    }
-    if (!nearestBranchId) continue;
-
-    let narrowing = 1;
-    for (const object of visibleStenoses) {
-      if (object.branchId !== nearestBranchId) continue;
-      const half = object.length / 2;
-      const dt = nearestT - object.position;
-      if (Math.abs(dt) > half * 3 + 0.001) continue; // ガウス裾は概ね3σで打ち切り(性能対策)
-      const sigma = Math.max(half / 2, 0.001);
-      const gaussian = Math.exp(-(dt * dt) / (2 * sigma * sigma));
-      const localNarrowing = 1 - (object.severity / 100) * gaussian;
-      narrowing = Math.min(narrowing, localNarrowing);
-    }
-
-    if (narrowing >= 0.999) continue;
-
-    const branch = targetBranches.find((b) => b.id === nearestBranchId)!;
-    const sample = sampleCenterline(branch.points, nearestT);
-    const nx = sample.point.x + (vertex.x - sample.point.x) * narrowing;
-    const nz = sample.point.z + (vertex.z - sample.point.z) * narrowing;
-    position.setXYZ(i, nx, vertex.y, nz);
-  }
-
-  position.needsUpdate = true;
-  deformed.computeVertexNormals();
-  return deformed;
 }

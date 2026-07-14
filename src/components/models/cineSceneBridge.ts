@@ -39,6 +39,13 @@ export interface CineSceneHandle {
    * 上限は無い。表示トグルがOFFのオブジェクトはこの配列に含めない。
    */
   objectProxies: ObjectProxyEntry[];
+  /**
+   * 狭窄プラークの外径/内径チューブメッシュ。石灰化・ステントとは別に、血管本体の
+   * 共有アキュムレータへ「外径は符号反転・内径は通常符号」で加算することで、
+   * 血管自身の生厚みからプラークぶんの厚みを差し引く(CineVesselThicknessEffect参照)。
+   * 1件の狭窄オブジェクトにつき outer/inner の2エントリが入る。
+   */
+  stenosisPlaqueProxies: StenosisPlaqueProxyEntry[];
 }
 
 export interface ObjectProxyEntry {
@@ -46,6 +53,17 @@ export interface ObjectProxyEntry {
   mesh: Mesh;
   /** リアルX線モードでの吸収係数。石灰化は血管より高く(より暗く)、ステントは非常に高くする。 */
   absorption: number;
+}
+
+export interface StenosisPlaqueProxyEntry {
+  id: string;
+  mesh: Mesh;
+  /**
+   * 血管アキュムレータへの加算符号。外径チューブは-1(血管の生厚みから減算)、
+   * 内径チューブは+1(通常の血管同様に加算)。この2つの和が
+   * ちょうど「プラーク自身の厚み」の符号反転(=減算量)になる。
+   */
+  sign: 1 | -1;
 }
 
 export const cineSceneBridge: { current: CineSceneHandle | null } = { current: null };

@@ -262,7 +262,7 @@ function triangleWave(x: number): number {
  * 依存関係に含まれておらず、新規に依存を追加するほどの処理でもないため、
  * 既存のcalcificationMesh.tsと同様に手動連結で対応する。
  */
-function mergeIndexedGeometries(geometries: BufferGeometry[]): BufferGeometry {
+export function mergeIndexedGeometries(geometries: BufferGeometry[]): BufferGeometry {
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];

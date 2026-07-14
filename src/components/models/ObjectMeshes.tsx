@@ -1,16 +1,17 @@
 import { useMemo } from "react";
 import type { VesselId } from "../../types/anatomy";
-import type { CalcificationObject, CardioObject, StentObject } from "../../types/object";
+import type { CalcificationObject, CardioObject, StenosisObject, StentObject } from "../../types/object";
 import { getObjectsForVessel } from "../../types/object";
 import { useCardioStore } from "../../store/useCardioStore";
 import { buildCalcificationMesh } from "./calcificationMesh";
 import { buildStentGeometry, buildStentLatticeGeometry } from "./stentLatticeMesh";
 import type { StentLatticeParams } from "./stentLatticeMesh";
+import { buildStenosisPlaqueGeometry, STENOSIS_PLAQUE_COLOR } from "./stenosisPlaqueMesh";
 import type { CenterlinePoint } from "./vesselCenterline";
 import type { VesselGraph } from "./vesselGraph";
 import { getBranch } from "./vesselGraph";
 
-/** 種類ごとに固定した表示色。狭窄(stenosis)は血管ジオメトリ自体の変形で表現するため色を持たない。 */
+/** 種類ごとに固定した表示色。 */
 export const CALCIFICATION_COLOR = "#e8c400";
 export const STENT_COLOR = "#9098a0";
 
@@ -73,6 +74,18 @@ function StentMaterial() {
   return <meshStandardMaterial color={STENT_COLOR} metalness={0.75} roughness={0.3} />;
 }
 
+/**
+ * 狭窄プラークのジオメトリ(外径チューブ+内径チューブを結合したもの)をメモ化するフック。
+ * メインビュー・シネビューのどちらも同じ形状データを使う。
+ */
+export function useStenosisPlaqueGeometry(centerline: CenterlinePoint[], object: StenosisObject) {
+  return useMemo(
+    () => buildStenosisPlaqueGeometry(centerline, object),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [centerline, object.id, object.position, object.length, object.severity],
+  );
+}
+
 interface ObjectMeshesProps {
   vesselId: VesselId;
   graph: VesselGraph;
@@ -80,10 +93,10 @@ interface ObjectMeshesProps {
 }
 
 /**
- * 血管1本分のオブジェクトメッシュ(石灰化・ステント)を、メインビュー向けの写実的な
- * マテリアルでまとめて描画する。狭窄(stenosis)は血管ジオメトリ自体の変形
- * (vesselCenterline.applyStenosisDeformation)で表現するため、ここでは追加
- * メッシュを生成しない。シネビュー側は同じ `useCalcificationGeometry` /
+ * 血管1本分のオブジェクトメッシュ(狭窄プラーク・石灰化・ステント)を、メインビュー向けの
+ * 写実的なマテリアルでまとめて描画する。血管ジオメトリ自体は一切変形しない(狭窄も
+ * ステント・石灰化と同じく、undeformedな血管の内側に重ねる別メッシュとして表現する)。
+ * シネビュー側は同じ `useStenosisPlaqueGeometry` / `useCalcificationGeometry` /
  * `useStentGeometry` フックを使い、X線風の別マテリアルで独自に描画する
  * (CineAnatomyModel.tsx 参照)。各オブジェクトは branchId で指定された枝の中心線
  * (本幹または側枝)を使って描画するため、存在しない枝を参照するオブジェクトは無視する。
@@ -93,6 +106,13 @@ export function ObjectMeshes({ vesselId, graph, objects }: ObjectMeshesProps) {
 
   return (
     <>
+      {vesselObjects
+        .filter((o): o is StenosisObject => o.type === "stenosis" && o.visible)
+        .map((object) => {
+          const branch = getBranch(graph, object.branchId);
+          if (!branch) return null;
+          return <StenosisPlaque key={object.id} object={object} centerline={branch.points} />;
+        })}
       {vesselObjects
         .filter((o): o is CalcificationObject => o.type === "calcification" && o.visible)
         .map((object) => {
@@ -108,6 +128,19 @@ export function ObjectMeshes({ vesselId, graph, objects }: ObjectMeshesProps) {
           return <StentLattice key={object.id} object={object} centerline={branch.points} />;
         })}
     </>
+  );
+}
+
+/**
+ * 狭窄プラークの結合ジオメトリ(外径+内径チューブ)に脂質性プラーク色のマテリアルを
+ * 乗せて表示する。血管を半透明にすると、この内側に付着したプラークが透けて見える。
+ */
+function StenosisPlaque({ object, centerline }: { object: StenosisObject; centerline: CenterlinePoint[] }) {
+  const { merged } = useStenosisPlaqueGeometry(centerline, object);
+  return (
+    <mesh geometry={merged}>
+      <meshStandardMaterial color={STENOSIS_PLAQUE_COLOR} roughness={0.7} metalness={0.02} />
+    </mesh>
   );
 }
 

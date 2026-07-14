@@ -3,15 +3,13 @@ import { Html, Line, useGLTF } from "@react-three/drei";
 import type { Vector3 } from "three";
 import type { BufferGeometry, Mesh, MeshStandardMaterial } from "three";
 import type { AnatomyDisplayState, VesselId, ModelSource } from "../../types/anatomy";
-import type { StenosisObject, StentObject } from "../../types/object";
-import { getObjectsForVessel } from "../../types/object";
+import type { StentObject } from "../../types/object";
 import { useCardioStore } from "../../store/useCardioStore";
 import { HeartModel } from "./HeartModel";
 import { HeartbeatGroup } from "./HeartbeatGroup";
 import { ObjectMeshes } from "./ObjectMeshes";
 import { buildStentGeometry } from "./stentLatticeMesh";
 import { VesselModel } from "./VesselModel";
-import { applyStenosisDeformation } from "./vesselCenterline";
 import type { VesselGraph } from "./vesselGraph";
 import { getBranch, getBranchesAtNode, getMainTrunk, getVesselGraph } from "./vesselGraph";
 import { SEGMENT_DEFS, splitGeometryByLength } from "./vesselSegments";
@@ -211,51 +209,35 @@ function GltfAnatomyModels({ url }: { url: string }) {
     return result;
   }, []);
 
-  // 狭窄オブジェクトに基づく変形済みジオメトリ。オブジェクトが無い血管は applyStenosisDeformation が
-  // 元のジオメトリ参照をそのまま返すため、以降の処理でも「変形なし」を安全に判定できる。
-  const deformedGeometries = useMemo(() => {
-    const result = new Map<VesselId, BufferGeometry>();
-    for (const id of VESSEL_IDS) {
-      const mesh = meshesByName.get(id);
-      const graph = graphs.get(id);
-      if (!mesh || !graph) continue;
-      const stenoses = getObjectsForVessel(objects, id).filter(
-        (o): o is StenosisObject => o.type === "stenosis",
-      );
-      result.set(id, applyStenosisDeformation(mesh.geometry, graph, stenoses));
-    }
-    return result;
-  }, [meshesByName, graphs, objects]);
-
   useEffect(() => {
     applyDisplayState(meshesByName.get("HEART"), heart);
   }, [meshesByName, heart]);
 
-  // 主幹メッシュの表示: セグメントモード、または狭窄変形が入っている場合は元メッシュを
-  // 隠し、置き換え用のJSXメッシュ側で描画する。それ以外は従来通り store の値を反映する。
+  // 主幹メッシュの表示: セグメントモード中は元メッシュを隠し、置き換え用のJSXメッシュ側で
+  // 描画する。それ以外は従来通り store の値を反映する(狭窄は血管ジオメトリを一切変形しない
+  // ため、ここでの分岐は不要になった)。
   useEffect(() => {
     for (const id of VESSEL_IDS) {
       const mesh = meshesByName.get(id);
       if (!mesh) continue;
-      const isDeformed = deformedGeometries.get(id) !== mesh.geometry;
-      if (segmentMode || isDeformed) {
+      if (segmentMode) {
         mesh.visible = false;
       } else {
         applyDisplayState(mesh, vessels[id]);
       }
     }
-  }, [meshesByName, vessels, segmentMode, deformedGeometries]);
+  }, [meshesByName, vessels, segmentMode]);
 
-  // 主幹ジオメトリ(狭窄変形済み、無ければ元ジオメトリ)をセグメント数に分割したもの。
+  // 主幹ジオメトリをセグメント数に分割したもの。
   const segmentGeometries = useMemo(() => {
     const result = new Map<string, BufferGeometry[]>();
     for (const id of VESSEL_IDS) {
-      const geometry = deformedGeometries.get(id) ?? meshesByName.get(id)?.geometry;
+      const geometry = meshesByName.get(id)?.geometry;
       if (!geometry) continue;
       result.set(id, splitGeometryByLength(geometry, SEGMENT_DEFS[id].length));
     }
     return result;
-  }, [meshesByName, deformedGeometries]);
+  }, [meshesByName]);
 
   /**
    * ノードマーカーのクリックを、新規追加フォームへの位置事前入力(pendingObjectPosition)、
@@ -311,38 +293,6 @@ function GltfAnatomyModels({ url }: { url: string }) {
   return (
     <HeartbeatGroup>
       <primitive object={scene} />
-
-      {/* 狭窄変形が入っている主幹の置き換えメッシュ(セグメントモードOFF時のみ) */}
-      {!segmentMode &&
-        VESSEL_IDS.map((id) => {
-          const mesh = meshesByName.get(id);
-          const deformed = deformedGeometries.get(id);
-          if (!mesh || !deformed || deformed === mesh.geometry) return null;
-          const state = vessels[id];
-          if (!state) return null;
-          return (
-            <mesh
-              key={id}
-              name={id}
-              geometry={deformed}
-              visible={state.visible}
-              castShadow
-              receiveShadow
-            >
-              <meshStandardMaterial
-                color={state.color}
-                transparent={state.opacity < 1}
-                opacity={state.opacity}
-                depthWrite={state.opacity >= 1}
-                roughness={0.4}
-                metalness={0.1}
-                onUpdate={(material) => {
-                  material.needsUpdate = true;
-                }}
-              />
-            </mesh>
-          );
-        })}
 
       {segmentMode &&
         VESSEL_IDS.flatMap((trunkId) => {
