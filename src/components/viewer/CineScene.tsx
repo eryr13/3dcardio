@@ -110,9 +110,11 @@ export function CineScene() {
           vesselMeshes: {},
           vesselVisible: {},
           heartMesh: null,
+          contrastMaskMeshes: {},
+          contrastFlowModeEnabled: false,
+          lumenSubtractionProxies: [],
           stentProxies: [],
           calcificationProxies: [],
-          lumenSubtractionProxies: [],
         };
       }}
     >

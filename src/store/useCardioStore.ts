@@ -16,6 +16,9 @@ import type { CardioObject, ObjectPatch, NewObjectInput } from "../types/object"
 import { buildSegmentVesselStates } from "../components/models/vesselSegments";
 import type { StentLatticeParams } from "../components/models/stentLatticeMesh";
 import { DEFAULT_STENT_LATTICE_PARAMS } from "../components/models/stentLatticeMesh";
+import type { ContrastState } from "../types/contrast";
+import type { ContrastFlowParams } from "../utils/contrastFlow";
+import { DEFAULT_CONTRAST_FLOW_PARAMS } from "../utils/contrastFlow";
 
 /**
  * メインビューの初期カメラ位置。CameraRig.tsx が実際にマウントした際もこの値を使う
@@ -128,6 +131,27 @@ interface CardioStore {
   setDebugShowCenterlines: (v: boolean) => void;
   stentLatticeParams: StentLatticeParams;
   setStentLatticeParams: (patch: Partial<StentLatticeParams>) => void;
+
+  /**
+   * Phase 7: 造影剤フローの再生状態。cine(拍動再生)とは独立したタイムラインで、
+   * 「造影剤を注入」ボタンを押すたびにaccumulatedSeconds=0から再生し直す。
+   */
+  contrast: ContrastState;
+  /**
+   * 造影剤フローモードのON/OFF。既定(false)ではシネのリアルX線モードは
+   * Phase 7実装前と同じ、常時フル吸収の血管描画になる。
+   */
+  setContrastEnabled: (enabled: boolean) => void;
+  /** 現在の状態に関わらず、時刻0からplaying=trueで再生し直す(注入ボタン用)。 */
+  injectContrast: () => void;
+  playContrast: () => void;
+  pauseContrast: () => void;
+  /** 完全に停止し、時刻0(造影剤なし)に戻す。 */
+  resetContrast: () => void;
+  /** タイムラインスクラバー用。指定秒数の位置へ移動する(再生中ならそこから再生を継続)。 */
+  seekContrast: (seconds: number) => void;
+  setContrastParam: <K extends keyof ContrastFlowParams>(key: K, value: ContrastFlowParams[K]) => void;
+  setContrastPlaybackSpeed: (multiplier: number) => void;
 }
 
 export interface CameraAngleRequest {
@@ -205,6 +229,20 @@ const initialCine: CineState = {
   xrayParams: DEFAULT_CINE_XRAY_PARAMS,
   exporting: false,
   zoom: DEFAULT_CINE_ZOOM,
+};
+
+/**
+ * 既定(enabled=false)では造影剤フローモード自体がOFFで、シネのリアルX線モードは
+ * Phase 7実装前と同じ常時フル吸収の血管描画になる。モードON中は未注入(濃度0)状態から
+ * 始まり、注入ボタンを押すまでシネビューの血管は何も見えない。
+ */
+const initialContrast: ContrastState = {
+  enabled: false,
+  playing: false,
+  playStartedAtMs: null,
+  accumulatedSeconds: 0,
+  playbackSpeedMultiplier: 1,
+  params: DEFAULT_CONTRAST_FLOW_PARAMS,
 };
 
 export const useCardioStore = create<CardioStore>((set) => ({
@@ -364,6 +402,55 @@ export const useCardioStore = create<CardioStore>((set) => ({
   stentLatticeParams: DEFAULT_STENT_LATTICE_PARAMS,
   setStentLatticeParams: (patch) =>
     set((state) => ({ stentLatticeParams: { ...state.stentLatticeParams, ...patch } })),
+
+  contrast: initialContrast,
+
+  setContrastEnabled: (enabled) =>
+    set((state) => ({
+      // ONにする際は常に未注入(濃度0)の状態から始める(前回OFFにする直前の再生位置を
+      // 引き継がない、「モードに入るたびに注入前から」という単純な挙動にする)。
+      contrast: enabled
+        ? { ...state.contrast, enabled, playing: false, playStartedAtMs: null, accumulatedSeconds: 0 }
+        : { ...state.contrast, enabled },
+    })),
+
+  injectContrast: () =>
+    set((state) => ({
+      contrast: { ...state.contrast, playing: true, playStartedAtMs: performance.now(), accumulatedSeconds: 0 },
+    })),
+
+  playContrast: () =>
+    set((state) => {
+      if (state.contrast.playing) return state;
+      return { contrast: { ...state.contrast, playing: true, playStartedAtMs: performance.now() } };
+    }),
+
+  pauseContrast: () => set((state) => ({ contrast: pauseContrastState(state.contrast) })),
+
+  resetContrast: () =>
+    set((state) => ({
+      contrast: { ...state.contrast, playing: false, playStartedAtMs: null, accumulatedSeconds: 0 },
+    })),
+
+  seekContrast: (seconds) =>
+    set((state) => {
+      const accumulatedSeconds = Math.max(0, seconds);
+      return {
+        contrast: {
+          ...state.contrast,
+          accumulatedSeconds,
+          playStartedAtMs: state.contrast.playing ? performance.now() : null,
+        },
+      };
+    }),
+
+  setContrastParam: (key, value) =>
+    set((state) => ({
+      contrast: { ...state.contrast, params: { ...state.contrast.params, [key]: value } },
+    })),
+
+  setContrastPlaybackSpeed: (multiplier) =>
+    set((state) => ({ contrast: { ...state.contrast, playbackSpeedMultiplier: Math.max(0.05, multiplier) } })),
 }));
 
 function createObjectId(): string {
@@ -379,5 +466,17 @@ function pauseCineState(cine: CineState): CineState {
     playing: false,
     playStartedAtMs: null,
     accumulatedSeconds: cine.accumulatedSeconds + elapsed,
+  };
+}
+
+/** pauseCineStateと同じ考え方(cineのplayingとplaybackSpeedMultiplierが独立している点のみ異なる)。 */
+function pauseContrastState(contrast: ContrastState): ContrastState {
+  if (!contrast.playing || contrast.playStartedAtMs === null) return contrast;
+  const elapsed = ((performance.now() - contrast.playStartedAtMs) / 1000) * contrast.playbackSpeedMultiplier;
+  return {
+    ...contrast,
+    playing: false,
+    playStartedAtMs: null,
+    accumulatedSeconds: contrast.accumulatedSeconds + elapsed,
   };
 }

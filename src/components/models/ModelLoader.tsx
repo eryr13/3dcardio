@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Html, Line, useGLTF } from "@react-three/drei";
-import { Box3, Vector3 } from "three";
-import type { BufferGeometry, Mesh, MeshStandardMaterial } from "three";
+import { Box3, MeshStandardMaterial, Vector3 } from "three";
+import type { BufferGeometry, Mesh } from "three";
 import type { AnatomyDisplayState, VesselId, ModelSource } from "../../types/anatomy";
-import type { StentObject } from "../../types/object";
+import type { CardioObject, StentObject } from "../../types/object";
 import { useCardioStore } from "../../store/useCardioStore";
+import { ContrastFillTube } from "./ContrastFillTube";
 import { HeartModel } from "./HeartModel";
 import { HeartbeatGroup } from "./HeartbeatGroup";
 import { ObjectMeshes } from "./ObjectMeshes";
@@ -189,6 +190,7 @@ function GltfAnatomyModels({ url }: { url: string }) {
   const pickingObjectVessel = useCardioStore((s) => s.pickingObjectVessel);
   const setPickingObjectVessel = useCardioStore((s) => s.setPickingObjectVessel);
   const debugShowCenterlines = useCardioStore((s) => s.debugShowCenterlines);
+  const contrastFlowModeEnabled = useCardioStore((s) => s.contrast.enabled);
   const [hovered, setHovered] = useState<{ id: string; point: Vector3 } | null>(null);
 
   const meshesByName = useMemo(() => {
@@ -363,6 +365,21 @@ function GltfAnatomyModels({ url }: { url: string }) {
         );
       })}
 
+      {contrastFlowModeEnabled &&
+        VESSEL_IDS.map((id) => {
+          const graph = graphs.get(id);
+          if (!graph || !vessels[id]?.visible) return null;
+          return (
+            <MainViewContrastFillTube
+              key={`contrast-${id}`}
+              vesselId={id}
+              graph={graph}
+              objects={objects}
+              color={vessels[id].color}
+            />
+          );
+        })}
+
       {debugShowCenterlines &&
         VESSEL_IDS.map((id) => {
           if (!vessels[id]?.visible) return null;
@@ -385,6 +402,39 @@ function GltfAnatomyModels({ url }: { url: string }) {
         </mesh>
       )}
     </HeartbeatGroup>
+  );
+}
+
+/**
+ * メインビュー用の造影剤充填チューブ。血管自体のマテリアルと全く同じ色を使うと造影剤の
+ * 有無が見分けにくいため、頂点カラー(baseColor経由、contrastFillMesh.tsのcontrastFillColor
+ * 参照)で血管色をベースに濃度に応じた明度・彩度を焼き込む。マテリアル自体はvertexColors:
+ * trueの白ベースにして頂点カラーをそのまま通す(白だと乗算しても色が変わらないため)。
+ */
+function MainViewContrastFillTube({
+  vesselId,
+  graph,
+  objects,
+  color,
+}: {
+  vesselId: VesselId;
+  graph: VesselGraph;
+  objects: CardioObject[];
+  color: string;
+}) {
+  const material = useMemo(
+    () => new MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0.1 }),
+    [],
+  );
+  return (
+    <ContrastFillTube
+      vesselId={vesselId}
+      graph={graph}
+      objects={objects}
+      material={material}
+      visible={true}
+      baseColor={color}
+    />
   );
 }
 

@@ -4,6 +4,7 @@ import { BackSide, Box3, Mesh, MeshBasicMaterial, MultiplyBlending, NormalBlendi
 import { useCardioStore } from "../../store/useCardioStore";
 import type { VesselId, VesselState } from "../../types/anatomy";
 import type { CalcificationObject, StenosisObject, StentObject } from "../../types/object";
+import { ContrastFillTube, ContrastMaskTube } from "./ContrastFillTube";
 import { HeartbeatGroup } from "./HeartbeatGroup";
 import { useCalcificationGeometry, useStenosisPlaqueGeometry, useStentGeometry, useStentLatticeGeometry } from "./ObjectMeshes";
 import { cineSceneBridge } from "./cineSceneBridge";
@@ -40,6 +41,23 @@ function createVesselMaterial() {
 function createObjectSilhouetteMaterial(color: string) {
   return new MeshBasicMaterial({
     color,
+    transparent: true,
+    blending: MultiplyBlending,
+    premultipliedAlpha: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+}
+
+/**
+ * Phase 7: 造影剤フローで満たされた内腔チューブのスキーマ表示用マテリアル。乗算
+ * ブレンディングでは色が暗いほど濃く写る(createVesselMaterialのグレーと同じ考え方)ため、
+ * 血管本体(#4a4a4a)よりさらに暗い色にして、「造影剤が入っている区間」が実際に
+ * 濃く写るX線と同じ向きでひと目でわかるようにする。
+ */
+function createContrastFillMaterial() {
+  return new MeshBasicMaterial({
+    color: "#141414",
     transparent: true,
     blending: MultiplyBlending,
     premultipliedAlpha: true,
@@ -91,6 +109,7 @@ export function CineAnatomyModel() {
   const xrayMode = useCardioStore((s) => s.cine.xrayMode);
   const xrayParams = useCardioStore((s) => s.cine.xrayParams);
   const stentLatticeParams = useCardioStore((s) => s.stentLatticeParams);
+  const contrastFlowModeEnabled = useCardioStore((s) => s.contrast.enabled);
 
   const built = useMemo(() => {
     const root = scene.clone(true);
@@ -140,6 +159,8 @@ export function CineAnatomyModel() {
     return new Box3().setFromObject(heartMesh).getCenter(new Vector3());
   }, [built]);
 
+  const contrastFillMaterial = useMemo(() => createContrastFillMaterial(), []);
+
   useEffect(() => {
     const vesselMeshes: Partial<Record<VesselId, Mesh>> = {};
     for (const id of VESSEL_IDS) {
@@ -164,6 +185,13 @@ export function CineAnatomyModel() {
     }
     if (cineSceneBridge.current) cineSceneBridge.current.vesselVisible = vesselVisible;
   }, [built, vessels, xrayMode]);
+
+  // 造影剤フローモード(サイドバーのトグル)のON/OFFをCineVesselThicknessEffectへ伝える。
+  // 血管アキュムレータの登録元(vesselMeshes、常時フル吸収)自体はモードに関わらず常に
+  // 同じで、ONの間だけその上に濃度マスク(contrastMaskMeshes)を追加で掛け合わせる。
+  useEffect(() => {
+    if (cineSceneBridge.current) cineSceneBridge.current.contrastFlowModeEnabled = contrastFlowModeEnabled;
+  }, [contrastFlowModeEnabled]);
 
   useEffect(() => {
     if (!built.outline) return;
@@ -219,7 +247,8 @@ export function CineAnatomyModel() {
   // 内腔を狭める要素(狭窄の外径/内径チューブ、石灰化の内腔減算用シェル)のメッシュへの
   // 参照を集約し、CineVesselThicknessEffectが血管本体の共有アキュムレータへ符号付きで
   // 加算するのに使う(cineSceneBridge.lumenSubtractionProxies)。狭窄は1オブジェクトに
-  // つきouter/innerの2キー、石灰化はnarrowingの1キーで登録する。
+  // つきouter/innerの2キー、石灰化はnarrowingの1キーで登録する。造影剤フローモードOFF
+  // (既定)の間だけ実際にCineVesselThicknessEffect側で使われる。
   const lumenSubtractionMeshRefsById = useRef(new Map<string, { mesh: Mesh; sign: 1 | -1 }>());
 
   function syncLumenSubtractionProxies() {
@@ -234,6 +263,18 @@ export function CineAnatomyModel() {
       if (mesh) lumenSubtractionMeshRefsById.current.set(id, { mesh, sign });
       else lumenSubtractionMeshRefsById.current.delete(id);
       syncLumenSubtractionProxies();
+    };
+  }
+
+  // Phase 7: 造影剤濃度マスク用チューブ(ContrastMaskTube)のメッシュへの参照を、
+  // 造影剤フローモードON中だけCineVesselThicknessEffectが濃度マスクアキュムレータへの
+  // 登録元として使う(cineSceneBridge.contrastMaskMeshes)。血管ごとに1つ(可変件数では
+  // ない)なので、石灰化・ステントのようなMapベースの集約は不要。
+  function registerContrastMaskMesh(vesselId: VesselId) {
+    return (mesh: Mesh | null) => {
+      if (!cineSceneBridge.current) return;
+      if (mesh) cineSceneBridge.current.contrastMaskMeshes[vesselId] = mesh;
+      else delete cineSceneBridge.current.contrastMaskMeshes[vesselId];
     };
   }
 
@@ -253,6 +294,39 @@ export function CineAnatomyModel() {
       }}
     >
       <primitive object={built.root} />
+
+      {contrastFlowModeEnabled &&
+        VESSEL_IDS.map((id) => {
+          const graph = built.graphs.get(id);
+          if (!graph) return null;
+          return (
+            <>
+              {/* スキーマ表示用の見た目のオーバーレイ。xrayMode中は他の全オブジェクトの
+                  スキーマ用メッシュと同様、表示自体を隠す(隠さないと、リアルX線モードの
+                  ポストプロセス結果の上にこの乗算ブレンドの暗い塗りつぶしが重なり、
+                  二重に暗くなってしまう不具合があった)。 */}
+              <ContrastFillTube
+                key={`contrast-fill-${id}`}
+                vesselId={id}
+                graph={graph}
+                objects={objects}
+                material={contrastFillMaterial}
+                visible={isTrunkVisibleInCine(vessels, id) && !xrayMode}
+              />
+              {/* リアルX線モード専用の濃度マスク登録元。常時非表示、深度ピール用プロキシの
+                  元ジオメトリとしてのみ使う(CineStentLatticeのlatticeGeometryと同じ扱い)。 */}
+              <ContrastMaskTube
+                key={`contrast-mask-${id}`}
+                vesselId={id}
+                graph={graph}
+                objects={objects}
+                material={contrastFillMaterial}
+                visible={false}
+                onRef={registerContrastMaskMesh(id)}
+              />
+            </>
+          );
+        })}
 
       {visibleStenoses.map((object) => {
         const graph = built.graphs.get(object.vesselId);
@@ -316,7 +390,8 @@ interface CineObjectMeshProps<T> {
  * スキーマ表示は結合ジオメトリ(外側+内側成長分のシェル)をシルエットマテリアルで
  * 表示する(石灰化の高吸収を表す既存の「オブジェクト」チャンネルはこの同じジオメトリを
  * onRef経由で登録する)。加えて、内腔減算専用シェル(narrowing、常時非表示)を
- * onRefNarrowing経由で登録し、内側への張り出し分だけ血管の生厚みから差し引く。
+ * onRefNarrowing経由で登録し、造影剤フローモードOFF(既定)の間、内側への張り出し分だけ
+ * 血管の生厚みから差し引く。
  */
 function CineCalcificationBump({
   object,
@@ -342,8 +417,8 @@ function CineCalcificationBump({
 /**
  * スキーマ表示は結合ジオメトリ(外径+内径チューブ)をシルエットマテリアルで表示する
  * (石灰化・ステントと同じ扱い)。リアルX線モードでは、この結合ジオメトリではなく
- * outer/inner を独立したメッシュとして常時非表示のまま登録し、
- * CineVesselThicknessEffectが血管本体の共有アキュムレータへの加減算に使う
+ * outer/inner を独立したメッシュとして常時非表示のまま登録し、造影剤フローモードOFF
+ * (既定)の間、CineVesselThicknessEffectが血管本体の共有アキュムレータへの加減算に使う
  * (mainImage側でのブラー処理は血管本体の生厚みに対して行われるため、outer/innerの
  * 描画用メッシュ自体はxrayMode中も一切visible=trueにしない)。
  */

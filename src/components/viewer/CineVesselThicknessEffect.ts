@@ -4,9 +4,11 @@ import {
   BackSide,
   Camera,
   CustomBlending,
+  DoubleSide,
   FrontSide,
   HalfFloatType,
   LinearFilter,
+  MaxEquation,
   Mesh,
   OneFactor,
   RGBAFormat,
@@ -32,9 +34,10 @@ const PEEL_RESOLUTION = 1024;
 /**
  * このシェーダーが同時にバインドするsampler2Dユニフォームの総数
  * (入力バッファ1 + 血管アキュムレータ1 + 心臓アキュムレータ1 + ステントアキュムレータ1 +
- * 石灰化アキュムレータ1)。WebGL2はフラグメントシェーダーにつき最低16テクスチャ
- * イメージユニットを保証するのみで、これを超えるとGPU/ドライバによってはシェーダー
- * プログラムのリンクに失敗し、画面が真っ黒になる(=何もレンダーされない)可能性がある。
+ * 石灰化アキュムレータ1 + 造影剤濃度マスクアキュムレータ1)。WebGL2はフラグメント
+ * シェーダーにつき最低16テクスチャイメージユニットを保証するのみで、これを超えると
+ * GPU/ドライバによってはシェーダープログラムのリンクに失敗し、画面が真っ黒になる
+ * (=何もレンダーされない)可能性がある。
  *
  * 以前は血管3本・心臓・オブジェクト6スロットそれぞれに専用のfront/backテクスチャを
  * 個別に持たせており(計21ユニット)、実機で「MAX_TEXTURE_IMAGE_UNITS(16)を超過して
@@ -45,7 +48,31 @@ const PEEL_RESOLUTION = 1024;
  * した。将来オブジェクトスロットを増やしてもこの数は変わらないため、同種の不具合が
  * 再発することは構造的に無い。
  */
-const REQUIRED_TEXTURE_UNITS = 1 + 4;
+const REQUIRED_TEXTURE_UNITS = 1 + 5;
+
+/**
+ * 造影剤フローモード専用の濃度マスク描画シェーダー。深度ピールの前後面差分(厚み)は
+ * 一切扱わず、頂点属性aScalar(0〜1の濃度)をそのままフラグメント出力に流すだけの
+ * 単純な1パス描画。MaxEquationブレンド(下のensureContrastMaskProxy参照)と組み合わせる
+ * ことで、複数の枝のチューブが重なる画素でも「そこを覆うどれかのチューブが持つ最大濃度」
+ * が素直に得られる(加算だと重なった分だけ値が積み上がってしまい、血管本体より濃く
+ * 見えすぎる不具合の原因になるため、意図的に加算ではなくMaxを使う)。
+ */
+const CONTRAST_MASK_VERTEX_SHADER = /* glsl */ `
+attribute float aScalar;
+varying float vScalar;
+void main() {
+  vScalar = aScalar;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+const CONTRAST_MASK_FRAGMENT_SHADER = /* glsl */ `
+varying float vScalar;
+void main() {
+  gl_FragColor = vec4(clamp(vScalar, 0.0, 1.0), 0.0, 0.0, 1.0);
+}
+`;
 
 /**
  * アキュムレータへの加算/減算を担う頂点/フラグメントシェーダー。血管・心臓・
@@ -105,6 +132,9 @@ uniform sampler2D uStentAccum;
 
 uniform sampler2D uCalcificationAccum;
 
+uniform sampler2D uContrastMaskAccum;
+uniform bool uContrastMaskActive;
+
 // 軽量なぼかし(周囲8方向+中心の加重平均)。TiltShift2等の画面全体のブラー効果では
 // なく、特定のアキュムレータの厚み情報そのものに対して掛けることで、細い構造が
 // 全体ブラーで消えてしまう問題を避けている。血管の輪郭のにじみと、石灰化の
@@ -151,6 +181,13 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   vec3 toned = inputColor.rgb * lungBrighten(uv);
 
   float vesselOpticalDepth = blurredSample(uVesselAccum, uv, uBlurRadius) * uAbsorption;
+  // 造影剤フローモード中だけ、濃度マスク(0〜1、MaxEquationブレンドで重なりを二重
+  // 加算しない)を血管の光学的厚みに掛け合わせる。濃度1.0の区間はマスクが1.0になり
+  // モードOFF時(このifを通らない場合)と全く同じ光学的厚みになることが保証される。
+  if (uContrastMaskActive) {
+    float contrastMask = clamp(texture2D(uContrastMaskAccum, uv).r, 0.0, 1.0);
+    vesselOpticalDepth *= contrastMask;
+  }
   float heartOpticalDepth = max(0.0, texture2D(uHeartAccum, uv).r) * uHeartAbsorption;
   // ステントは吸収係数を既に加算前に掛けてあるため、そのまま光学的厚みとして扱う。
   // ブラーは一切掛けない(=金属の網目らしい、細く鋭いストラットの線を保つ)。
@@ -282,10 +319,18 @@ export class CineVesselThicknessEffect extends Effect {
    * 共有するが、uSignをエントリごとに(通常の血管は+1固定、減算したい面は-1、
    * 加算したい面は+1に)都度設定してから描画することで、専用のテクスチャチャンネルを
    * 増やさずに「血管の生厚み - 内腔方向への張り出し厚み」を同じ共有アキュムレータ内で
-   * 計算する。
+   * 計算する。造影剤フローモードOFF(既定)の間のみ使われる。
    */
   private readonly lumenSubtractionProxies: (Mesh | null)[] = [];
   private readonly lumenSubtractionProxySourceGeometry: (unknown | null)[] = [];
+  /**
+   * 造影剤フローモードの濃度マスク描画用マテリアル。深度ピールの前後面差分ではなく
+   * MaxEquationブレンドの単一パスで、頂点属性aScalar(濃度)をそのまま出力する。
+   */
+  private readonly contrastMaskMaterial: ShaderMaterial;
+  private readonly contrastMaskProxies: Partial<Record<VesselId, Mesh>> = {};
+  private readonly contrastMaskProxySourceGeometry: Partial<Record<VesselId, unknown>> = {};
+  private readonly contrastMaskAccumTarget: WebGLRenderTarget;
   private viewCamera: Camera | null = null;
   /**
    * false の間は心臓の陰影を深度ピールごと丸ごとスキップし、冠動脈のみを表示する
@@ -309,6 +354,8 @@ export class CineVesselThicknessEffect extends Effect {
       ["uHeartAbsorption", new Uniform(heartAbsorption)],
       ["uStentAccum", new Uniform(null)],
       ["uCalcificationAccum", new Uniform(null)],
+      ["uContrastMaskAccum", new Uniform(null)],
+      ["uContrastMaskActive", new Uniform(false)],
     ]);
     super("CineVesselThicknessEffect", THICKNESS_FRAGMENT_SHADER, {
       blendFunction: BlendFunction.SET,
@@ -347,11 +394,24 @@ export class CineVesselThicknessEffect extends Effect {
       uSign: new Uniform(-1),
       uWeight: new Uniform(1),
     });
+    this.contrastMaskMaterial = new ShaderMaterial({
+      vertexShader: CONTRAST_MASK_VERTEX_SHADER,
+      fragmentShader: CONTRAST_MASK_FRAGMENT_SHADER,
+      side: DoubleSide,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      blending: CustomBlending,
+      blendEquation: MaxEquation,
+      blendSrc: OneFactor,
+      blendDst: OneFactor,
+    });
     this.peelScene = new Scene();
     this.vesselAccumTarget = createPeelTarget();
     this.heartAccumTarget = createPeelTarget();
     this.stentAccumTarget = createPeelTarget();
     this.calcificationAccumTarget = createPeelTarget();
+    this.contrastMaskAccumTarget = createPeelTarget();
     this.heartEnabled = heartEnabled;
   }
 
@@ -484,6 +544,27 @@ export class CineVesselThicknessEffect extends Effect {
   }
 
   /**
+   * 造影剤フローモードの濃度マスクプロキシ。血管と同じ「元メッシュのgeometryを共有しつつ
+   * matrixWorldだけ毎フレームコピーする」パターンだが、マテリアルはcontrastMaskMaterial
+   * (MaxEquationブレンドの単一パス)固定。
+   */
+  private ensureContrastMaskProxy(id: VesselId, sourceMesh: Mesh): Mesh {
+    const existing = this.contrastMaskProxies[id];
+    if (existing && this.contrastMaskProxySourceGeometry[id] === sourceMesh.geometry) {
+      return existing;
+    }
+    if (existing) this.peelScene.remove(existing);
+    const proxy = new Mesh(sourceMesh.geometry, this.contrastMaskMaterial);
+    proxy.frustumCulled = false;
+    proxy.matrixAutoUpdate = false;
+    proxy.matrixWorldAutoUpdate = false;
+    this.peelScene.add(proxy);
+    this.contrastMaskProxies[id] = proxy;
+    this.contrastMaskProxySourceGeometry[id] = sourceMesh.geometry;
+    return proxy;
+  }
+
+  /**
    * peelSceneには血管3本+心臓+オブジェクトのプロキシが常駐しているため、1回のレンダーパスで
    * 「今measureしたい1つ」以外が写り込むと深度が汚染される(特に心臓は他の全プロキシより
    * 大きく、混入すると血管の厚みが大きく狂う)。パスの直前に対象以外を全てvisible=falseに
@@ -502,6 +583,10 @@ export class CineVesselThicknessEffect extends Effect {
       if (proxy) proxy.visible = proxy === active;
     }
     for (const proxy of this.lumenSubtractionProxies) {
+      if (proxy) proxy.visible = proxy === active;
+    }
+    for (const id of VESSEL_IDS) {
+      const proxy = this.contrastMaskProxies[id];
       if (proxy) proxy.visible = proxy === active;
     }
   }
@@ -537,6 +622,12 @@ export class CineVesselThicknessEffect extends Effect {
     // 血管: 3本まとめて1枚の共有ターゲットに加算合成する。ターゲットは血管ループの
     // 最初に1回だけクリアし、各血管の背面(+viewZ)・前面(-viewZ)パスをその上に
     // 加算ブレンドで重ね書きする(クリアを毎回行うと前の血管の積算結果が消えてしまう)。
+    //
+    // 造影剤フローモードのON/OFFに関わらず、常に素の血管メッシュ(handle.vesselMeshes)を
+    // 使う——Phase 7実装前と全く同じ「常時フル吸収で末梢まで濃く描出する」計算をベースに
+    // 固定することで、造影剤フローモードONで濃度1.0(完全に満たされた状態)になった区間が
+    // OFF時と完全に一致することを保証する。濃度による見た目の変化は、この後段で
+    // 濃度マスク(0〜1)を掛け合わせる形でのみ適用する(mainImage参照)。
     renderer.setRenderTarget(this.vesselAccumTarget);
     renderer.setClearColor(0x000000, 0);
     renderer.clear(true, true, true);
@@ -568,9 +659,8 @@ export class CineVesselThicknessEffect extends Effect {
     // 追加描画する。狭窄は外径チューブ(-1)+内径チューブ(+1)の2エントリで、その差
     // (外径厚み-内径厚み=プラーク自身の厚み)がちょうど血管の生厚みから差し引かれる。
     // 石灰化は内腔減算専用シェル(-1)の1エントリで、血管本来の半径と内腔半径の差
-    // (内側への張り出し量)だけが差し引かれ、外側への成長は一切差し引かれない。
-    // いずれも吸収係数を別途持たず、造影剤の厚みが減る形でのみ寄与する
-    // (非石灰化プラークがX線的にほぼ見えないという実際の臨床所見と一致する)。
+    // (内側への張り出し量)だけが差し引かれる。狭窄・石灰化による構造的な狭窄は
+    // 造影剤の有無とは無関係な解剖学的事実のため、モードのON/OFFに関わらず常時適用する。
     handle.lumenSubtractionProxies.forEach((entry, index) => {
       anyVesselVisible = true;
 
@@ -596,6 +686,38 @@ export class CineVesselThicknessEffect extends Effect {
     }
 
     this.uniforms.get("uVesselAccum")!.value = anyVesselVisible ? this.vesselAccumTarget.texture : null;
+
+    // 造影剤フローモードの濃度マスク: 専用ターゲットにMaxEquationブレンドの単一パスで
+    // 描画する(深度ピールの前後面差分は不要——厚みではなく「濃度」という単なる
+    // 0〜1のスカラー値を画素ごとに欲しいだけなので、front/backの2パスに分ける意味がない)。
+    // MaxEquationにより、複数の枝のチューブが同じ画素で重なっても値が二重に積み上がらず、
+    // 「その画素を覆うどれかのチューブが持つ最大濃度」がそのまま得られる。
+    if (handle.contrastFlowModeEnabled) {
+      renderer.setRenderTarget(this.contrastMaskAccumTarget);
+      renderer.setClearColor(0x000000, 0);
+      renderer.clear(true, true, true);
+
+      let anyMaskVisible = false;
+      for (const id of VESSEL_IDS) {
+        const sourceMesh = handle.contrastMaskMeshes[id];
+        const visible = handle.vesselVisible[id] !== false && !!sourceMesh;
+        if (!visible || !sourceMesh) continue;
+        anyMaskVisible = true;
+
+        const proxy = this.ensureContrastMaskProxy(id, sourceMesh);
+        proxy.matrixWorld.copy(sourceMesh.matrixWorld);
+        this.activateOnlyProxy(proxy);
+
+        renderer.setRenderTarget(this.contrastMaskAccumTarget);
+        proxy.material = this.contrastMaskMaterial;
+        renderer.render(this.peelScene, camera);
+      }
+      this.uniforms.get("uContrastMaskActive")!.value = anyMaskVisible;
+      this.uniforms.get("uContrastMaskAccum")!.value = anyMaskVisible ? this.contrastMaskAccumTarget.texture : null;
+    } else {
+      this.uniforms.get("uContrastMaskActive")!.value = false;
+      this.uniforms.get("uContrastMaskAccum")!.value = null;
+    }
 
     const heartMesh = handle.heartMesh;
     if (heartMesh && this.heartEnabled) {
@@ -705,6 +827,10 @@ export class CineVesselThicknessEffect extends Effect {
     for (const proxy of this.lumenSubtractionProxies) {
       if (proxy) proxy.visible = true;
     }
+    for (const id of VESSEL_IDS) {
+      const proxy = this.contrastMaskProxies[id];
+      if (proxy) proxy.visible = true;
+    }
 
     renderer.setRenderTarget(prevTarget);
     renderer.autoClear = prevAutoClear;
@@ -715,6 +841,8 @@ export class CineVesselThicknessEffect extends Effect {
     this.heartAccumTarget.dispose();
     this.stentAccumTarget.dispose();
     this.calcificationAccumTarget.dispose();
+    this.contrastMaskAccumTarget.dispose();
+    this.contrastMaskMaterial.dispose();
     this.vesselAccumBackMaterial.dispose();
     this.vesselAccumFrontMaterial.dispose();
     this.heartAccumBackMaterial.dispose();

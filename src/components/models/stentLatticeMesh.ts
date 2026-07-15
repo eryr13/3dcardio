@@ -1,4 +1,4 @@
-import { BufferGeometry, Float32BufferAttribute, Vector3 } from "three";
+import { BufferGeometry, Color, Float32BufferAttribute, Vector3 } from "three";
 import type { StentObject } from "../../types/object";
 import type { CenterlinePoint } from "./vesselCenterline";
 import { sampleCenterline } from "./vesselCenterline";
@@ -134,6 +134,19 @@ export function buildTubeFromPoints(
   radii: number[],
   radialSegments = 16,
   smoothingPasses = 24,
+  /**
+   * 各中心線点(rawPoints[i]と1対1対応)に紐づく任意のスカラー値。指定すると
+   * "aScalar" という頂点属性として、同じ点から生成される全周方向の頂点に同じ値を
+   * 複製して埋め込む(造影剤フローの濃度マスク用途、contrastFillMesh.ts参照)。
+   */
+  pointScalars?: number[],
+  /**
+   * 各中心線点(rawPoints[i]と1対1対応)に紐づく任意の色。指定すると標準の"color"
+   * 頂点属性として埋め込み、MeshStandardMaterial等のvertexColors:trueで直接使える
+   * (メインビューの造影剤充填チューブが、血管色をベースに濃度で明度・彩度を変えた
+   * 色を焼き込むのに使う、contrastFillMesh.ts参照)。
+   */
+  pointColors?: Color[],
 ): BufferGeometry {
   const { points, tangents, normals } = computeTubeFrame(rawPoints, smoothingPasses);
   const segments = points.length - 1;
@@ -141,6 +154,8 @@ export function buildTubeFromPoints(
   const positions: number[] = [];
   const outNormals: number[] = [];
   const uvs: number[] = [];
+  const scalars: number[] = [];
+  const colors: number[] = [];
   const indices: number[] = [];
 
   const binormal = new Vector3();
@@ -152,6 +167,8 @@ export function buildTubeFromPoints(
     const N = normals[i];
     binormal.crossVectors(tangent, N).normalize();
     const radius = radii[i];
+    const scalar = pointScalars?.[i] ?? 0;
+    const color = pointColors?.[i];
 
     for (let j = 0; j <= radialSegments; j++) {
       const v = (j / radialSegments) * Math.PI * 2;
@@ -162,6 +179,8 @@ export function buildTubeFromPoints(
       outNormals.push(normal.x, normal.y, normal.z);
       positions.push(point.x + radius * normal.x, point.y + radius * normal.y, point.z + radius * normal.z);
       uvs.push(i / segments, j / radialSegments);
+      if (pointScalars) scalars.push(scalar);
+      if (color) colors.push(color.r, color.g, color.b);
     }
   }
 
@@ -180,6 +199,8 @@ export function buildTubeFromPoints(
   geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
   geometry.setAttribute("normal", new Float32BufferAttribute(outNormals, 3));
   geometry.setAttribute("uv", new Float32BufferAttribute(uvs, 2));
+  if (pointScalars) geometry.setAttribute("aScalar", new Float32BufferAttribute(scalars, 1));
+  if (pointColors) geometry.setAttribute("color", new Float32BufferAttribute(colors, 3));
   return geometry;
 }
 
@@ -266,13 +287,22 @@ export function mergeIndexedGeometries(geometries: BufferGeometry[]): BufferGeom
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
+  const scalars: number[] = [];
+  const colors: number[] = [];
   const indices: number[] = [];
   let vertexOffset = 0;
+  // 全ジオメトリがaScalar/color属性を持つ場合のみ結合結果にも付与する(いずれも
+  // buildTubeFromPointsのpointScalars/pointColors引数で作られたジオメトリのみが持つ、
+  // 造影剤フロー用の任意属性)。
+  const hasScalar = geometries.length > 0 && geometries.every((g) => !!g.getAttribute("aScalar"));
+  const hasColor = geometries.length > 0 && geometries.every((g) => !!g.getAttribute("color"));
 
   for (const geometry of geometries) {
     const positionAttr = geometry.getAttribute("position");
     const normalAttr = geometry.getAttribute("normal");
     const uvAttr = geometry.getAttribute("uv");
+    const scalarAttr = hasScalar ? geometry.getAttribute("aScalar") : null;
+    const colorAttr = hasColor ? geometry.getAttribute("color") : null;
     const index = geometry.getIndex();
     if (!index) continue;
 
@@ -280,6 +310,8 @@ export function mergeIndexedGeometries(geometries: BufferGeometry[]): BufferGeom
       positions.push(positionAttr.getX(i), positionAttr.getY(i), positionAttr.getZ(i));
       normals.push(normalAttr.getX(i), normalAttr.getY(i), normalAttr.getZ(i));
       uvs.push(uvAttr.getX(i), uvAttr.getY(i));
+      if (scalarAttr) scalars.push(scalarAttr.getX(i));
+      if (colorAttr) colors.push(colorAttr.getX(i), colorAttr.getY(i), colorAttr.getZ(i));
     }
     for (let i = 0; i < index.count; i++) {
       indices.push(index.getX(i) + vertexOffset);
@@ -292,6 +324,8 @@ export function mergeIndexedGeometries(geometries: BufferGeometry[]): BufferGeom
   merged.setAttribute("position", new Float32BufferAttribute(positions, 3));
   merged.setAttribute("normal", new Float32BufferAttribute(normals, 3));
   merged.setAttribute("uv", new Float32BufferAttribute(uvs, 2));
+  if (hasScalar) merged.setAttribute("aScalar", new Float32BufferAttribute(scalars, 1));
+  if (hasColor) merged.setAttribute("color", new Float32BufferAttribute(colors, 3));
   return merged;
 }
 

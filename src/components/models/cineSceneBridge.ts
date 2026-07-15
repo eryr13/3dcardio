@@ -26,10 +26,44 @@ export interface CineSceneHandle {
    * スキーマ表示中や、リアルX線モードのCanvasがまだマウントされていない間は null。
    */
   composer: EffectComposer | null;
-  /** RCA/LAD/LCX の主幹メッシュ。CineVesselThicknessEffect が深度ピール用プロキシの元にする */
+  /**
+   * RCA/LAD/LCX の主幹メッシュ。シネスキーマ表示(!xrayMode)の塗りつぶし描画に使うほか、
+   * CineVesselThicknessEffect の深度ピール用アキュムレータの登録元として、造影剤
+   * フローモードのON/OFFに関わらず常にこれを使う(常時フル吸収で末梢まで濃く描出する、
+   * Phase 7以前からの挙動)。造影剤フローモードONの間は、この上にさらに濃度マスク
+   * (contrastMaskMeshes)を掛け合わせて「濃度に応じて薄く見せる」効果を追加するだけで、
+   * ベースとなる光学的厚みの計算自体は一切変更しない——これにより濃度1.0の区間は
+   * モードOFF時と完全に同じ見え方になることが保証される。
+   */
   vesselMeshes: Partial<Record<VesselId, Mesh>>;
   /** ユーザー操作(表示/非表示トグル)による主幹単位の表示状態。xrayMode中は塗りつぶしメッシュ自体は隠すため、こちらで別管理する */
   vesselVisible: Partial<Record<VesselId, boolean>>;
+  /**
+   * Phase 7: 造影剤フローモード(contrastFlowModeEnabled)がONの間だけ使われる、濃度
+   * マスク用チューブ(ContrastFillTube.tsxのContrastMaskTube)。半径は内腔比率
+   * (狭窄・石灰化による構造的な狭窄)までしか縮めず、濃度は頂点属性として持つ。
+   * CineVesselThicknessEffectがMAXブレンドの単一パスで描画し、「その画素における
+   * 最大濃度」を0〜1のマスクとして取り出し、vesselMeshes由来の光学的厚みに掛け合わせる
+   * (厚みの測定には使わない——厚みとして使うと血管本体より濃くなりすぎる不具合の
+   * 原因だったため、マスク専用に分離した)。
+   */
+  contrastMaskMeshes: Partial<Record<VesselId, Mesh>>;
+  /**
+   * true の間だけ contrastMaskMeshes によるマスクを血管の光学的厚みに掛け合わせる
+   * (造影剤フローモードのcontrast.enabledをCineAnatomyModel.tsxが反映する)。
+   * false(既定)ではマスクを一切適用せず、Phase 7実装前と全く同じ常時フル吸収描画になる。
+   */
+  contrastFlowModeEnabled: boolean;
+  /**
+   * 内腔を狭める要素(狭窄プラークの外径/内径チューブ、石灰化の内腔減算用シェル)の
+   * メッシュ。石灰化・ステントの「オブジェクト」チャンネル(高吸収体としての表現)とは別に、
+   * 血管本体の共有アキュムレータへ符号付きで加算することで、血管自身の生厚みから内腔
+   * 方向への張り出しぶんの厚みを差し引く(CineVesselThicknessEffect参照)。狭窄は
+   * 1オブジェクトにつきouter(-1)/inner(+1)の2エントリ、石灰化は内腔減算専用シェル(-1)の
+   * 1エントリが入る。造影剤フローモードのON/OFFに関わらず常時適用される
+   * (狭窄・石灰化による構造的な狭窄は造影剤の有無とは無関係な解剖学的事実のため)。
+   */
+  lumenSubtractionProxies: LumenSubtractionProxyEntry[];
   /** 心臓本体メッシュ。常時 visible=false(塗りつぶし表示はしない)だが、CineVesselThicknessEffect が
    * リアルX線モードの陰影用深度ピールプロキシの元ジオメトリとして参照する */
   heartMesh: Mesh | null;
@@ -49,15 +83,6 @@ export interface CineSceneHandle {
    * (CineVesselThicknessEffect参照)。
    */
   calcificationProxies: ObjectProxyEntry[];
-  /**
-   * 内腔を狭める要素(狭窄プラークの外径/内径チューブ、石灰化の内腔減算用シェル)の
-   * メッシュ。石灰化・ステントの「オブジェクト」チャンネル(高吸収体としての表現)とは別に、
-   * 血管本体の共有アキュムレータへ符号付きで加算することで、血管自身の生厚みから
-   * 内腔方向への張り出しぶんの厚みを差し引く(CineVesselThicknessEffect参照)。
-   * 狭窄は1オブジェクトにつきouter(-1)/inner(+1)の2エントリ、石灰化は
-   * 内腔減算専用シェル(-1)の1エントリが入る。
-   */
-  lumenSubtractionProxies: LumenSubtractionProxyEntry[];
 }
 
 export interface ObjectProxyEntry {

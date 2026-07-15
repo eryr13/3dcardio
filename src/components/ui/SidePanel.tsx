@@ -3,6 +3,7 @@ import { ClippingControls } from "./ClippingControls";
 import { AnatomyLegend } from "./AnatomyLegend";
 import { ObjectPanel } from "./ObjectPanel";
 import { CineControls } from "./CineControls";
+import { ContrastControls } from "./ContrastControls";
 import { CArmCalibration } from "./CArmCalibration";
 import { CArmReadout } from "./CArmReadout";
 import { DebugPanel } from "./DebugPanel";
@@ -16,6 +17,7 @@ export function SidePanel() {
       <AnatomyLegend />
       <ObjectPanel />
       <CineControls />
+      <ContrastControls />
       <CArmCalibration />
       <CArmReadout />
       <DebugPanel />
