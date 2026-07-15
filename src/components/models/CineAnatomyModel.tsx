@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { Fragment, useEffect, useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
 import { BackSide, Box3, Mesh, MeshBasicMaterial, MultiplyBlending, NormalBlending, Vector3 } from "three";
 import { useCardioStore } from "../../store/useCardioStore";
@@ -300,7 +300,7 @@ export function CineAnatomyModel() {
           const graph = built.graphs.get(id);
           if (!graph) return null;
           return (
-            <>
+            <Fragment key={id}>
               {/* スキーマ表示用の見た目のオーバーレイ。xrayMode中は他の全オブジェクトの
                   スキーマ用メッシュと同様、表示自体を隠す(隠さないと、リアルX線モードの
                   ポストプロセス結果の上にこの乗算ブレンドの暗い塗りつぶしが重なり、
@@ -324,7 +324,7 @@ export function CineAnatomyModel() {
                 visible={false}
                 onRef={registerContrastMaskMesh(id)}
               />
-            </>
+            </Fragment>
           );
         })}
 
