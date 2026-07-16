@@ -18,7 +18,10 @@ const SLIDERS: SliderDef[] = [
   { key: "vignetteStrength", label: "ビネット強度", min: 0, max: 1, step: 0.01 },
   { key: "contrast", label: "コントラスト", min: 0, max: 1, step: 0.01 },
   { key: "vesselAbsorption", label: "血管吸収係数", min: 0.5, max: 30, step: 0.5 },
-  { key: "calcificationAbsorption", label: "石灰化吸収係数", min: 0.5, max: 60, step: 0.5 },
+  // 実際の透視での石灰化は「造影された血管より明確に淡い、境界のぼやけた陰影」
+  // (types/cine.tsのcalcificationAbsorptionコメント参照)なので、既定値・実用域とも
+  // vesselAbsorptionより明確に小さい。
+  { key: "calcificationAbsorption", label: "石灰化吸収係数", min: 0.1, max: 20, step: 0.1, decimals: 1 },
   { key: "stentAbsorption", label: "ステント吸収係数", min: 0.5, max: 400, step: 1 },
   // 心筋(心臓の陰影)も血管・石灰化・ステントと同じBeer-Lambert吸収係数として扱う
   // (別立てのopacityキャップではない)。造影剤(血管)より十分小さい値が既定。

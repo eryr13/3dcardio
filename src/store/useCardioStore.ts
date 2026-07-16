@@ -209,7 +209,7 @@ export const DEFAULT_CINE_XRAY_PARAMS: CineXrayParams = {
   vignetteStrength: 0.5,
   contrast: 0.65,
   vesselAbsorption: 15,
-  calcificationAbsorption: 35,
+  calcificationAbsorption: 3,
   stentAbsorption: 220,
   showBackgroundAnatomy: false,
   heartAbsorption: 1.0,

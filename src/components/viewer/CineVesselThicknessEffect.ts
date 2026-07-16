@@ -148,6 +148,11 @@ uniform sampler2D uVesselAccum;
 uniform float uAbsorption;
 uniform float uBlurRadius;
 
+// 石灰化はuBlurRadius(血管用)そのままだと低ポリゴンな塊の輪郭が硬く見えるため、
+// これを掛けた大きめの半径でぼかす(mainImage参照)。専用スライダーは設けず、
+// 既存の「ブラー量」に対する相対倍率として固定する。
+const float CALCIFICATION_BLUR_MULTIPLIER = 2.5;
+
 uniform sampler2D uHeartAccum;
 uniform float uHeartAbsorption;
 
@@ -209,9 +214,12 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // ステントは吸収係数を既に加算前に掛けてあるため、そのまま光学的厚みとして扱う。
   // ブラーは一切掛けない(=金属の網目らしい、細く鋭いストラットの線を保つ)。
   float stentOpticalDepth = max(0.0, texture2D(uStentAccum, uv).r);
-  // 石灰化も吸収係数を既に加算前に掛けてあるが、こちらは血管と同じ軽いブラーを
-  // 通す(=不整形な塊のポリゴンエッジをなめらかにし、血管に重なる自然な濃い陰影に見せる)。
-  float calcificationOpticalDepth = blurredSample(uCalcificationAccum, uv, uBlurRadius);
+  // 石灰化も吸収係数を既に加算前に掛けてあるが、実際の透視で石灰化が「不整形で
+  // ぼんやりした」陰影に見えるのに対し、血管と同じブラー半径では低ポリゴンな塊の
+  // 輪郭(ANGULAR_SEGMENTS由来のファセット)がそのまま透けて見えてしまい、硬く
+  // くっきりした人工的な塊に見えていた。血管より明確に大きいブラー半径を掛けることで、
+  // 輪郭をなめらかにし、血管に重なる自然な濃淡の陰影に見せる。
+  float calcificationOpticalDepth = blurredSample(uCalcificationAccum, uv, uBlurRadius * CALCIFICATION_BLUR_MULTIPLIER);
 
   // exp(-30)は既に無視できるほど0に近いため、上限でクランプしても見た目には
   // 影響しない(Infinity/NaNが万一紛れ込んでも画面全体が壊れないための安全策)。
