@@ -3,20 +3,37 @@ import type { StentObject } from "../../types/object";
 import type { CenterlinePoint } from "./vesselCenterline";
 import { sampleCenterline } from "./vesselCenterline";
 
-/** ステントの網目(ストラット)生成パラメータ。デバッグパネルから調整できる。 */
+/**
+ * ステントの網目(ストラット)生成パラメータ。デバッグパネルから調整できる。
+ *
+ * 実在の薬剤溶出ステント(例: Terumo Ultimaster、コバルトクロム・ストラット厚80µmの
+ * オープンセル・2リンク設計)の構造を参考にしている。以前の実装は「strutCount本の
+ * 連続したワイヤーが全長を貫いてジグザグし、隣接ワイヤー同士が交差する」編み込み
+ * (braided)ワイヤーメッシュ型で、自己拡張型の編組ステントに近い見た目だった。
+ * 実際のバルーン拡張型DESは、独立した正弦波状の「リング」が軸方向に並び、
+ * 隣接リング同士はごく少数の短いコネクタ(リンク)でだけ接続される
+ * (オープンセル設計)。この構造に合わせて作り直した。
+ */
 export interface StentLatticeParams {
-  /** 周方向に並べるストラット(ジグザグ状の線)の本数 */
-  strutCount: number;
-  /** 1本のストラットがステント全長にわたって描くジグザグの往復回数 */
-  crossingsPerWire: number;
-  /** ストラットの太さ(ステント半径に対する比率) */
+  /** ステント全長に配置するリング(正弦波状の輪)の数 */
+  ringCount: number;
+  /** 1リングあたりの周方向クラウン(山)数(Ultimasterクラスの実サイズで6〜9程度が一般的) */
+  crownsPerRing: number;
+  /** リング間を接続するコネクタ(リンク)の本数(オープンセル設計。Ultimasterは2) */
+  connectorsPerRing: number;
+  /**
+   * ストラットの太さ(ステント半径に対する比率)。実測値(80µmストラット/3mm径ステント)
+   * では半径比にしておよそ0.027だが、その値だと3Dビューでほぼ視認できなくなるため、
+   * 視認性とのバランスを取ってやや太めの既定値にしてある(実機で見ながら調整可能)。
+   */
   strutRadiusRatio: number;
 }
 
 export const DEFAULT_STENT_LATTICE_PARAMS: StentLatticeParams = {
-  strutCount: 8,
-  crossingsPerWire: 6,
-  strutRadiusRatio: 0.12,
+  ringCount: 10,
+  crownsPerRing: 7,
+  connectorsPerRing: 2,
+  strutRadiusRatio: 0.05,
 };
 
 /**
@@ -149,6 +166,32 @@ export function buildTubeFromPoints(
   pointColors?: Color[],
 ): BufferGeometry {
   const { points, tangents, normals } = computeTubeFrame(rawPoints, smoothingPasses);
+  return buildTubeFromFrame(points, tangents, normals, radii, radialSegments, pointScalars, pointColors);
+}
+
+/**
+ * buildTubeFromPointsの三角形分割ロジックそのものだが、フレーム(tangents/normals)を
+ * computeTubeFrame(回転最小化・前点からの伝播)で計算する代わりに、呼び出し側が
+ * あらかじめ用意したフレームをそのまま使う。
+ *
+ * ステントのリング(閉じた正弦波状の輪、stentLatticeMesh.tsのbuildRingSamples参照)は
+ * 円周方向に閉じたループであり、computeTubeFrameの回転伝播(propagateNormals)は
+ * 開いた経路が前提のため、ループを1周した後の法線が起点の法線と厳密に一致する保証が
+ * ない(パスがねじれ(トーション)を持つ場合、伝播した法線が起点とわずかにずれ、
+ * 継ぎ目にねじれの段差が出うる)。リングは角度の周期関数として各点の位置・接線・
+ * 断面基準方向を直接(伝播でなく)計算しているため、角度=0と角度=2πで厳密に同じ
+ * 値になり、継ぎ目のねじれが構造的に起こらない。この関数はそのような「フレーム計算
+ * 自体を伝播に頼らない」呼び出し元のために、三角形分割ロジックだけを共有する。
+ */
+export function buildTubeFromFrame(
+  points: Vector3[],
+  tangents: Vector3[],
+  normals: Vector3[],
+  radii: number[],
+  radialSegments = 16,
+  pointScalars?: number[],
+  pointColors?: Color[],
+): BufferGeometry {
   const segments = points.length - 1;
 
   const positions: number[] = [];
@@ -302,23 +345,6 @@ export function buildStentGeometry(centerline: CenterlinePoint[], object: StentO
 const STRUT_RADIAL_SEGMENTS = 6;
 
 /**
- * ストラットのジグザグ点列はそれ自体が意図した折れ線形状であり、buildTubeFromPoints
- * 既定の強い平滑化(24回)をかけるとジグザグがほぼ消えて直線になってしまう。
- * 太さを与える程度のごく軽い平滑化(2回)に留める。
- */
-const STRUT_SMOOTHING_PASSES = 2;
-
-/**
- * 周期1、値域[-1, 1]の三角波。ストラットの周方向角度をジグザグに変調するのに使う
- * (sin波は交点付近の傾きが緩く網目の「角」が立たないため、直線的に往復する
- * 三角波を採用する)。
- */
-function triangleWave(x: number): number {
-  const frac = x - Math.floor(x);
-  return frac < 0.5 ? frac * 4 - 1 : 3 - frac * 4;
-}
-
-/**
  * 複数のBufferGeometry(いずれもposition/normal/uv属性とindexを持つ)を1つに
  * 手動で連結する。three.jsのBufferGeometryUtils.mergeGeometriesはこのリポジトリの
  * 依存関係に含まれておらず、新規に依存を追加するほどの処理でもないため、
@@ -370,24 +396,114 @@ export function mergeIndexedGeometries(geometries: BufferGeometry[]): BufferGeom
   return merged;
 }
 
+/** 1リング(1周)の正弦波を、1クラウン(山+谷1周期)あたり何点でサンプリングするか。偶数にして谷がちょうど半周期の位置に来るようにする。 */
+const RING_SAMPLES_PER_CROWN = 16;
+
+/** リングのピーク-トラフ間の軸方向振幅を、リング間隔に対してどの比率にするか。1リング分の山-谷幅がリング間隔いっぱいまで広がるとコネクタの隙間が無くなるため、余裕を持たせて0.32程度に抑える。 */
+const RING_HEIGHT_TO_SPACING_RATIO = 0.32;
+
+interface RingFrame {
+  /** リング中心点(centerline上のこのリングの軸位置)。 */
+  center: Vector3;
+  /** リングの軸方向(centerline tangent)。 */
+  tangent: Vector3;
+  /** リング断面の基準方向1(centerline normal)。 */
+  normal: Vector3;
+  /** リング断面の基準方向2(normal×tangentから求めたbinormal)。 */
+  binormal: Vector3;
+}
+
 /**
- * ステントのダイヤモンドカット状ラティス(網目状ストラット構造)ジオメトリを生成する。
+ * 1リング(独立した正弦波状の輪)の閉じた点列と、各点でのチューブ化用フレーム
+ * (tangent, 断面基準方向)を、角度の周期関数として直接計算する(前点からの
+ * 回転伝播には一切頼らない)。
  *
- * レベル1: buildStentGeometryと全く同じ区間・同じ中央値半径から、中心線の
- * 安定したフレーム(平滑化済み点列・tangent・回転最小化normal)を1回だけ計算し、
- * 全ストラット線で共有する(土台円筒と全く同じ計算を再利用するため、土台円筒が
- * 血管に正しく沿っていれば網目も必ず正しく沿う)。
+ * 位置: pos(angle) = center + tangent*axialOffset(angle) + stentRadius*radialDir(angle)
+ *   radialDir(angle) = cos(angle)*normal + sin(angle)*binormal (周期2π)
+ *   axialOffset(angle) = ringHalfHeight * cos(crownsPerRing * angle)
+ *     → crownsPerRing個の山(軸方向+側、次リング側)とcrownsPerRing個の谷
+ *       (軸方向-側、前リング側)が等間隔に交互する、閉じた正弦波リングになる。
  *
- * レベル2: strutCount本のストラット線を、円周方向に等間隔な基準角度から
- * 三角波でジグザグに角度変調しながらこのフレームからのオフセットとして生成する。
- * 隣り合うストラット線の振幅がちょうど基準角度の間隔の半分(±π/strutCount)なので、
- * 隣接線同士が触れ合うジグザグの頂点で交差し、連続した菱形(ダイヤモンド)の
- * 網目模様になる。各線は、既存の実績あるbuildTubeFromPointsで細いチューブ化する
- * (ジグザグ形状を保つためsmoothingPassesは小さい値に抑える)。
+ * チューブ化用フレーム: 位置と同じ式をangleで解析的に微分してこのリング自身の
+ * 経路接線(wireTangent)を求め、radialDir(angle)からwireTangentに直交する成分だけを
+ * 残したもの(グラム・シュミット直交化)を断面基準方向(refUp)とする。両方とも
+ * angle単独の周期関数として毎回そのまま計算しているため(状態を前の点から
+ * 引き継がない)、angle=0とangle=2πでの値が数値誤差の範囲で完全に一致し、
+ * 継ぎ目にねじれのズレが構造的に起こらない
+ * (computeTubeFrameの回転伝播は開いた経路が前提で、閉じたループを1周した後の
+ * 法線が起点と厳密に一致する保証がないため、リングにはこちらを使う)。
  *
- * ワールド座標へは一切直接配置せず、常にレベル1のローカルフレーム(tangent/normal/
- * binormal)を基準にオフセットを計算しているため、過去に発生した向きの破綻は
- * 構造的に起こらない。
+ * 返す点列はangle=0(index 0)からangle=2π(index totalSamples、位置・フレームとも
+ * index 0と同一)まで含む、buildTubeFromFrameでそのまま閉じたチューブになる形。
+ */
+function buildRingSamples(frame: RingFrame, stentRadius: number, ringHalfHeight: number, crownsPerRing: number) {
+  const { center, tangent: T, normal: N, binormal: B } = frame;
+  const totalSamples = crownsPerRing * RING_SAMPLES_PER_CROWN;
+
+  const positions: Vector3[] = [];
+  const tangents: Vector3[] = [];
+  const refUps: Vector3[] = [];
+
+  for (let s = 0; s <= totalSamples; s++) {
+    const angle = (2 * Math.PI * s) / totalSamples;
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    const radialDir = new Vector3().addScaledVector(N, cosA).addScaledVector(B, sinA);
+    const axialOffset = ringHalfHeight * Math.cos(crownsPerRing * angle);
+    positions.push(center.clone().addScaledVector(T, axialOffset).addScaledVector(radialDir, stentRadius));
+
+    const dAxialOffset = -ringHalfHeight * crownsPerRing * Math.sin(crownsPerRing * angle);
+    const dRadialDir = new Vector3().addScaledVector(N, -sinA).addScaledVector(B, cosA);
+    const wireTangent = new Vector3()
+      .addScaledVector(T, dAxialOffset)
+      .addScaledVector(dRadialDir, stentRadius)
+      .normalize();
+    tangents.push(wireTangent);
+
+    const refUp = radialDir.addScaledVector(wireTangent, -radialDir.dot(wireTangent)).normalize();
+    refUps.push(refUp);
+  }
+
+  return { positions, tangents, refUps };
+}
+
+/** リング内でk番目のクラウン(山、次リング側へ張り出す点)に対応するサンプルindex。 */
+function crownSampleIndex(k: number): number {
+  return k * RING_SAMPLES_PER_CROWN;
+}
+
+/** リング内でk番目のクラウンの直後にあるトラフ(谷、前リング側へ張り出す点)に対応するサンプルindex。 */
+function troughSampleIndex(k: number): number {
+  return k * RING_SAMPLES_PER_CROWN + RING_SAMPLES_PER_CROWN / 2;
+}
+
+/**
+ * ステントの、実在の薬剤溶出ステント(Terumo Ultimasterのオープンセル・2リンク設計を
+ * 参考にした)構造を模したラティス(網目状ストラット構造)ジオメトリを生成する。
+ *
+ * 実際のバルーン拡張型ステントは、コバルトクロムのチューブからレーザーカットで
+ * 作られ、独立した正弦波状の「リング」がステント全長に並び、隣接リング同士は
+ * 全周ではなくごく少数の短いコネクタ(リンク)だけで接続される「オープンセル」構造を
+ * 持つ(以前の実装は、strutCount本の連続したワイヤーが全長を貫いてジグザグし
+ * 隣接ワイヤー同士が交差する「編み込みワイヤーメッシュ」型で、自己拡張型の
+ * 編組ステントに近い見た目になっていた)。
+ *
+ * 生成手順:
+ * 1. ステント区間の中心線上にringCount個のリング中心点を等間隔に置き、
+ *    computeTubeFrameでこの粗い点列だけのフレーム(tangent・回転最小化normal)を
+ *    1回計算する(リングの本数は通常十分少ないため、回転伝播によるねじれの
+ *    蓄積リスクは無視できる)。
+ * 2. 各リング中心で、buildRingSamplesにより閉じた正弦波リングの点列・フレームを
+ *    角度の周期関数として直接計算し(伝播に頼らない、詳細は同関数のコメント参照)、
+ *    buildTubeFromFrameで細いチューブ化する。
+ * 3. 隣接するリングの間を、connectorsPerRing本の短い直線コネクタで接続する。
+ *    リングrのk番目のクラウン(次リング側へ張り出す山)から、リングr+1の
+ *    対応するトラフ(前リング側へ張り出す谷、山とは半クラウン分角度がずれた
+ *    位置にある)へ接続する。これにより、リングの正弦波の位相そのものから
+ *    自然に千鳥配置(隣接リング間でコネクタ位置が半クラウン分ずれる)になる。
+ *    どのクラウンにコネクタを付けるかは、リングの隙間(gap)ごとに1クラウン分ずつ
+ *    回転させ、実際のオープンセル設計のようにコネクタ位置がリングごとに
+ *    ずれるようにする。
  */
 export function buildStentLatticeGeometry(
   centerline: CenterlinePoint[],
@@ -399,53 +515,51 @@ export function buildStentLatticeGeometry(
   const tEnd = Math.min(1, object.position + half);
 
   const stentRadius = computeMedianStentRadius(centerline, tStart, tEnd, object.diameter);
-  const strutRadius = Math.max(stentRadius * params.strutRadiusRatio, 0.0004);
-  const crossingsPerWire = Math.max(1, params.crossingsPerWire);
-  const strutCount = Math.max(1, Math.round(params.strutCount));
+  const strutRadius = Math.max(stentRadius * params.strutRadiusRatio, 0.0003);
+  const crownsPerRing = Math.max(3, Math.round(params.crownsPerRing));
+  const ringCount = Math.max(1, Math.round(params.ringCount));
+  const connectorsPerRing = Math.max(1, Math.min(crownsPerRing, Math.round(params.connectorsPerRing)));
 
-  // ジグザグの往復を滑らかなチューブとして表現できるだけの解像度を確保する
-  // (ジグザグ回数が多いほど、それを表現するのに必要な点数も増える)。
-  const segmentCount = Math.max(64, Math.min(480, crossingsPerWire * 24));
-
-  const rawPoints: Vector3[] = [];
-  for (let i = 0; i <= segmentCount; i++) {
-    const t = tStart + ((tEnd - tStart) * i) / segmentCount;
-    rawPoints.push(sampleCenterline(centerline, t).point);
+  const ringRawPoints: Vector3[] = [];
+  for (let r = 0; r < ringCount; r++) {
+    const t = ringCount > 1 ? tStart + ((tEnd - tStart) * r) / (ringCount - 1) : (tStart + tEnd) / 2;
+    ringRawPoints.push(sampleCenterline(centerline, t).point);
   }
-  const { points: framePoints, tangents, normals } = computeTubeFrame(rawPoints);
+  const { points: ringCenters, tangents: ringTangents, normals: ringNormals } = computeTubeFrame(ringRawPoints, 4);
 
-  const binormal = new Vector3();
-  const halfSpacing = Math.PI / strutCount;
+  let totalSpacing = 0;
+  for (let r = 1; r < ringCount; r++) totalSpacing += ringCenters[r].distanceTo(ringCenters[r - 1]);
+  const avgSpacing = ringCount > 1 ? totalSpacing / (ringCount - 1) : stentRadius * 2;
+  const ringHalfHeight = (avgSpacing * RING_HEIGHT_TO_SPACING_RATIO) / 2;
+
+  const ringFrames: RingFrame[] = ringCenters.map((center, r) => {
+    const tangent = ringTangents[r];
+    const normal = ringNormals[r];
+    const binormal = new Vector3().crossVectors(tangent, normal).normalize();
+    return { center, tangent, normal, binormal };
+  });
+
+  const ringSamples = ringFrames.map((frame) => buildRingSamples(frame, stentRadius, ringHalfHeight, crownsPerRing));
+
   const geometries: BufferGeometry[] = [];
+  for (const sample of ringSamples) {
+    const radii = sample.positions.map(() => strutRadius);
+    geometries.push(buildTubeFromFrame(sample.positions, sample.tangents, sample.refUps, radii, STRUT_RADIAL_SEGMENTS));
+  }
 
-  for (let k = 0; k < strutCount; k++) {
-    const baseAngle = (k / strutCount) * Math.PI * 2;
-    const wirePoints: Vector3[] = [];
-    const wireRadii: number[] = [];
-
-    for (let i = 0; i <= segmentCount; i++) {
-      const u = i / segmentCount;
-      const center = framePoints[i];
-      const N = normals[i];
-      const T = tangents[i];
-      binormal.crossVectors(T, N).normalize();
-
-      const angle = baseAngle + halfSpacing * triangleWave(u * crossingsPerWire);
-      const cos = Math.cos(angle);
-      const sin = Math.sin(angle);
-      wirePoints.push(
-        new Vector3(
-          center.x + stentRadius * (cos * N.x + sin * binormal.x),
-          center.y + stentRadius * (cos * N.y + sin * binormal.y),
-          center.z + stentRadius * (cos * N.z + sin * binormal.z),
-        ),
+  for (let r = 0; r < ringCount - 1; r++) {
+    const fromSamples = ringSamples[r];
+    const toSamples = ringSamples[r + 1];
+    for (let c = 0; c < connectorsPerRing; c++) {
+      // ゲート(隙間)ごとに1クラウン分ずつ回転させ、コネクタ位置が実際の
+      // オープンセル設計のようにリング間で千鳥にずれるようにする。
+      const k = (Math.round((c * crownsPerRing) / connectorsPerRing) + r) % crownsPerRing;
+      const fromPoint = fromSamples.positions[crownSampleIndex(k)];
+      const toPoint = toSamples.positions[troughSampleIndex(k)];
+      geometries.push(
+        buildTubeFromPoints([fromPoint, toPoint], [strutRadius, strutRadius], STRUT_RADIAL_SEGMENTS, 0),
       );
-      wireRadii.push(strutRadius);
     }
-
-    geometries.push(
-      buildTubeFromPoints(wirePoints, wireRadii, STRUT_RADIAL_SEGMENTS, STRUT_SMOOTHING_PASSES),
-    );
   }
 
   return mergeIndexedGeometries(geometries);

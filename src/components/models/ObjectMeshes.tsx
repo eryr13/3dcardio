@@ -76,8 +76,9 @@ export function useStentLatticeGeometry(
       object.position,
       object.length,
       object.diameter,
-      params.strutCount,
-      params.crossingsPerWire,
+      params.ringCount,
+      params.crownsPerRing,
+      params.connectorsPerRing,
       params.strutRadiusRatio,
     ],
   );

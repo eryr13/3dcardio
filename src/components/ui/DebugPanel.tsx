@@ -22,42 +22,54 @@ export function DebugPanel() {
         中心線グラフを3Dビューに表示(本幹=白、側枝=色分け)
       </label>
 
-      <h3 className="panel-subheading">ステントの網目(ストラット)</h3>
+      <h3 className="panel-subheading">ステントの網目(オープンセル・リング構造)</h3>
       <label className="object-form-row">
-        本数(周方向)
-        <input
-          type="range"
-          min={4}
-          max={16}
-          step={1}
-          value={stentLatticeParams.strutCount}
-          onChange={(e) => setStentLatticeParams({ strutCount: Number(e.target.value) })}
-        />
-        <span className="opacity-value">{stentLatticeParams.strutCount}</span>
-      </label>
-      <label className="object-form-row">
-        ジグザグ数(軸方向)
+        リング数(軸方向)
         <input
           type="range"
           min={2}
-          max={20}
+          max={24}
           step={1}
-          value={stentLatticeParams.crossingsPerWire}
-          onChange={(e) => setStentLatticeParams({ crossingsPerWire: Number(e.target.value) })}
+          value={stentLatticeParams.ringCount}
+          onChange={(e) => setStentLatticeParams({ ringCount: Number(e.target.value) })}
         />
-        <span className="opacity-value">{stentLatticeParams.crossingsPerWire}</span>
+        <span className="opacity-value">{stentLatticeParams.ringCount}</span>
+      </label>
+      <label className="object-form-row">
+        クラウン数(1リングあたり、周方向)
+        <input
+          type="range"
+          min={3}
+          max={12}
+          step={1}
+          value={stentLatticeParams.crownsPerRing}
+          onChange={(e) => setStentLatticeParams({ crownsPerRing: Number(e.target.value) })}
+        />
+        <span className="opacity-value">{stentLatticeParams.crownsPerRing}</span>
+      </label>
+      <label className="object-form-row">
+        リング間コネクタ本数
+        <input
+          type="range"
+          min={1}
+          max={4}
+          step={1}
+          value={stentLatticeParams.connectorsPerRing}
+          onChange={(e) => setStentLatticeParams({ connectorsPerRing: Number(e.target.value) })}
+        />
+        <span className="opacity-value">{stentLatticeParams.connectorsPerRing}</span>
       </label>
       <label className="object-form-row">
         ストラットの太さ
         <input
           type="range"
-          min={0.05}
-          max={0.3}
-          step={0.01}
+          min={0.02}
+          max={0.15}
+          step={0.005}
           value={stentLatticeParams.strutRadiusRatio}
           onChange={(e) => setStentLatticeParams({ strutRadiusRatio: Number(e.target.value) })}
         />
-        <span className="opacity-value">{stentLatticeParams.strutRadiusRatio.toFixed(2)}</span>
+        <span className="opacity-value">{stentLatticeParams.strutRadiusRatio.toFixed(3)}</span>
       </label>
     </CollapsibleSection>
   );
