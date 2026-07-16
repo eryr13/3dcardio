@@ -54,12 +54,29 @@ describe("computeArrivalTables against the real RCA centerline dataset", () => {
     ];
     const withoutStenosis = computeArrivalTables(graph, [], "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
     const withStenosis = computeArrivalTables(graph, objects, "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
+    const links = buildBranchLinks(graph);
+
+    // link.divergenceTは「この枝の直接の親からの分岐位置」であり、孫枝以降では
+    // 本幹上の位置ではなく中間の枝上の位置になる。本幹の狭窄区間(t=0.125〜0.175)より
+    // 遠位側かどうかを正しく判定するには、本幹の直接の子である祖先までさかのぼり、
+    // その祖先が本幹上のどこで分岐したかを見る必要がある(祖先が狭窄より遠位で分岐して
+    // いれば、そこからぶら下がる孫枝以降も必ず遠位側になる)。
+    function divergesFromMainTrunkAt(branch: (typeof graph.branches)[number]): number | null {
+      let current = branch;
+      while (true) {
+        const link = links.get(current.id);
+        if (!link?.parentBranchId) return null; // 本幹自身、または孤立枝
+        if (link.parentBranchId === mainTrunk.id) return link.divergenceT;
+        const parent = graph.branches.find((b) => b.id === link.parentBranchId);
+        if (!parent) return null;
+        current = parent;
+      }
+    }
 
     for (const branch of graph.branches) {
-      const links = buildBranchLinks(graph);
-      const link = links.get(branch.id);
+      const divergenceOnMainTrunk = divergesFromMainTrunkAt(branch);
       // 狭窄区間(t=0.125〜0.175)より遠位側にある枝だけを対象にする
-      const isDownstream = branch.isMainTrunk || (link?.divergenceT ?? 0) > 0.175;
+      const isDownstream = branch.isMainTrunk || (divergenceOnMainTrunk ?? 0) > 0.175;
       if (!isDownstream) continue;
 
       const tEnd = branch.points[branch.points.length - 1].t;
