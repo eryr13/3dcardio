@@ -19,6 +19,7 @@ import { DEFAULT_STENT_LATTICE_PARAMS } from "../components/models/stentLatticeM
 import type { ContrastState } from "../types/contrast";
 import type { ContrastFlowParams } from "../utils/contrastFlow";
 import { DEFAULT_CONTRAST_FLOW_PARAMS } from "../utils/contrastFlow";
+import type { PerfusionMode, PerfusionState } from "../types/perfusion";
 
 /**
  * メインビューの初期カメラ位置。CameraRig.tsx が実際にマウントした際もこの値を使う
@@ -152,6 +153,14 @@ interface CardioStore {
   seekContrast: (seconds: number) => void;
   setContrastParam: <K extends keyof ContrastFlowParams>(key: K, value: ContrastFlowParams[K]) => void;
   setContrastPlaybackSpeed: (multiplier: number) => void;
+
+  /**
+   * Phase 8: 心筋灌流領域・虚血表示のモード。造影剤フローモード(contrast)とは独立で、
+   * こちらは「今の狭窄・石灰化の配置が、どの心筋領域にどれだけ血流制限を及ぼしているか」を
+   * 常時反映する静的な表示(注入・再生の操作を必要としない)。
+   */
+  perfusion: PerfusionState;
+  setPerfusionMode: (mode: PerfusionMode) => void;
 }
 
 export interface CameraAngleRequest {
@@ -243,6 +252,10 @@ const initialContrast: ContrastState = {
   accumulatedSeconds: 0,
   playbackSpeedMultiplier: 1,
   params: DEFAULT_CONTRAST_FLOW_PARAMS,
+};
+
+const initialPerfusion: PerfusionState = {
+  mode: "off",
 };
 
 export const useCardioStore = create<CardioStore>((set) => ({
@@ -451,6 +464,9 @@ export const useCardioStore = create<CardioStore>((set) => ({
 
   setContrastPlaybackSpeed: (multiplier) =>
     set((state) => ({ contrast: { ...state.contrast, playbackSpeedMultiplier: Math.max(0.05, multiplier) } })),
+
+  perfusion: initialPerfusion,
+  setPerfusionMode: (mode) => set((state) => ({ perfusion: { ...state.perfusion, mode } })),
 }));
 
 function createObjectId(): string {

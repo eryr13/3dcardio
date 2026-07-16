@@ -8,6 +8,7 @@ import { useCardioStore } from "../../store/useCardioStore";
 import { ContrastFillTube } from "./ContrastFillTube";
 import { HeartModel } from "./HeartModel";
 import { HeartbeatGroup } from "./HeartbeatGroup";
+import { HeartPerfusionOverlay } from "./HeartPerfusionOverlay";
 import { ObjectMeshes } from "./ObjectMeshes";
 import { buildStentGeometry } from "./stentLatticeMesh";
 import { VesselModel } from "./VesselModel";
@@ -191,6 +192,7 @@ function GltfAnatomyModels({ url }: { url: string }) {
   const setPickingObjectVessel = useCardioStore((s) => s.setPickingObjectVessel);
   const debugShowCenterlines = useCardioStore((s) => s.debugShowCenterlines);
   const contrastFlowModeEnabled = useCardioStore((s) => s.contrast.enabled);
+  const perfusionMode = useCardioStore((s) => s.perfusion.mode);
   const [hovered, setHovered] = useState<{ id: string; point: Vector3 } | null>(null);
 
   const meshesByName = useMemo(() => {
@@ -221,8 +223,13 @@ function GltfAnatomyModels({ url }: { url: string }) {
   }, []);
 
   useEffect(() => {
-    applyDisplayState(meshesByName.get("HEART"), heart);
-  }, [meshesByName, heart]);
+    const heartMesh = meshesByName.get("HEART");
+    applyDisplayState(heartMesh, heart);
+    // Phase 8: 灌流テリトリー/虚血表示中は、通常の心臓メッシュの代わりに
+    // HeartPerfusionOverlay(頂点カラー版のジオメトリ)を表示する。表示/非表示・
+    // 不透明度は同じstate.heartにそのまま従うので、ここでは元メッシュだけを隠す。
+    if (heartMesh && perfusionMode !== "off") heartMesh.visible = false;
+  }, [meshesByName, heart, perfusionMode]);
 
   // 主幹メッシュの表示: セグメントモード中は元メッシュを隠し、置き換え用のJSXメッシュ側で
   // 描画する。それ以外は従来通り store の値を反映する(狭窄は血管ジオメトリを一切変形しない
@@ -304,6 +311,10 @@ function GltfAnatomyModels({ url }: { url: string }) {
   return (
     <HeartbeatGroup>
       <primitive object={scene} />
+
+      {perfusionMode !== "off" && (
+        <HeartPerfusionOverlay heartMesh={meshesByName.get("HEART")} graphs={graphs} objects={objects} />
+      )}
 
       {segmentMode &&
         VESSEL_IDS.flatMap((trunkId) => {
