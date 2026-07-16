@@ -4,7 +4,6 @@ import {
   DEFAULT_CONTRAST_FLOW_PARAMS,
   buildBranchLinks,
   computeArrivalTables,
-  computeLumenAreaFractionAt,
   getArrivalTimeAt,
   getCalcificationRadiusFractionAt,
   getCeilingAt,
@@ -131,7 +130,6 @@ describe("getCalcificationRadiusFractionAt / getLumenRadiusFractionAt", () => {
   it("reaches exactly 0 (full occlusion) at thickness=100, angleSpan=360", () => {
     const objects: CardioObject[] = [calcification({ thickness: 100, angleSpan: 360 })];
     expect(getLumenRadiusFractionAt(objects, "RCA", "RCA-main", 0.5)).toBe(0);
-    expect(computeLumenAreaFractionAt(objects, "RCA", "RCA-main", 0.5)).toBe(0);
   });
 });
 
@@ -167,25 +165,30 @@ describe("computeArrivalTables", () => {
     expect(getArrivalTimeAt(sideTable, 0)).toBeCloseTo(divergenceArrival);
   });
 
-  it("delays downstream arrival when a high-grade stenosis narrows the main trunk", () => {
+  it("does not delay the propagation front at all, even through a high-grade stenosis (front speed is constant)", () => {
+    // Model: the front always advances at a constant baseSpeed, regardless of any
+    // stenosis/calcification along the way — narrowing is expressed purely as a lower
+    // ceiling (max reachable concentration) downstream, never as a slower front. This is
+    // what keeps propagation from ever looking like it "stalls" at a narrowing.
     const graph = buildTestGraph();
     const objects: CardioObject[] = [stenosis({ vesselId: "RCA", branchId: "RCA-main", position: 0.5, length: 0.2, severity: 90 })];
     const withoutStenosis = computeArrivalTables(graph, [], "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
     const withStenosis = computeArrivalTables(graph, objects, "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
     const arrivalAtEndWithout = getArrivalTimeAt(withoutStenosis.get("RCA-main"), 1);
     const arrivalAtEndWith = getArrivalTimeAt(withStenosis.get("RCA-main"), 1);
-    expect(arrivalAtEndWith).toBeGreaterThan(arrivalAtEndWithout * 2);
+    expect(arrivalAtEndWith).toBeCloseTo(arrivalAtEndWithout, 5);
   });
 
-  it("never lets contrast reach the distal territory through a 100% occlusion", () => {
+  it("still reaches a 100% occlusion's downstream territory at the normal, undelayed arrival time", () => {
     const graph = buildTestGraph();
     const objects: CardioObject[] = [
       calcification({ vesselId: "RCA", branchId: "RCA-main", position: 0.5, length: 0.2, thickness: 100, angleSpan: 360 }),
     ];
+    const healthy = computeArrivalTables(graph, [], "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
     const tables = computeArrivalTables(graph, objects, "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
-    const arrivalAtEnd = getArrivalTimeAt(tables.get("RCA-main"), 1);
-    // Any realistic playback duration (tens of seconds) is dwarfed by this.
-    expect(arrivalAtEnd).toBeGreaterThan(1000);
+    // The front itself still reaches t=1 right on schedule — it's the ceiling (tested
+    // separately below) that blocks any visible concentration from ever appearing there.
+    expect(getArrivalTimeAt(tables.get("RCA-main"), 1)).toBeCloseTo(getArrivalTimeAt(healthy.get("RCA-main"), 1), 5);
   });
 });
 
@@ -278,11 +281,110 @@ describe("flow-limiting ceiling (peripheral fill fraction, not just delay)", () 
     expect(seriesCeiling).toBeCloseTo(singleCeiling * singleCeiling, 3);
   });
 
-  it("propagates a main-trunk stenosis's ceiling reduction into side branches, in addition to the delay", () => {
+  it("reaches its final (worst) value once the entrance taper meets the plateau, not at the lesion's far exit", () => {
+    const graph = buildTestGraph();
+    // length=0.8 keeps each 10% taper zone (0.08 wide) comfortably larger than the test
+    // graph's 0.05 sample spacing, so real branch sample points fall inside the taper.
+    const objects: CardioObject[] = [stenosis({ severity: 90, position: 0.5, length: 0.8 })];
+    const tables = computeArrivalTables(graph, objects, "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
+    const table = tables.get("RCA-main");
+    const ceilingEarlyInEntranceTaper = getCeilingAt(table, 0.15); // still tapering in (s≈-0.875)
+    const ceilingAtPlateauStart = getCeilingAt(table, 0.2); // just past the entrance taper (s=-0.75)
+    const ceilingFarDownstream = getCeilingAt(table, 1); // past the entire lesion, including exit taper
+    expect(ceilingAtPlateauStart).toBeLessThan(ceilingEarlyInEntranceTaper);
+    expect(ceilingAtPlateauStart).toBeCloseTo(ceilingFarDownstream, 5);
+  });
+
+  it("propagates a main-trunk stenosis's ceiling reduction into side branches", () => {
     const graph = buildTestGraph();
     const objects: CardioObject[] = [stenosis({ severity: 90, position: 0.2, length: 0.05 })];
     const tables = computeArrivalTables(graph, objects, "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
     const sideCeiling = getCeilingAt(tables.get("RCA-side1"), 1);
     expect(sideCeiling).toBeLessThan(0.3);
+  });
+});
+
+describe("propagation front speed is constant regardless of stenosis (continuous flow, never stalls)", () => {
+  // Regression coverage for the model shift away from "front slows down at a narrowing"
+  // (which always looked like the front stalling/jamming at the stenosis, however the
+  // slowdown curve was tuned) toward "front always advances at a constant speed; a
+  // narrowing only lowers the maximum concentration reachable downstream of it". Any
+  // remaining dependence of arrivalSeconds on lesion severity would reintroduce the
+  // stall — these tests pin arrival time to be identical to a healthy vessel across the
+  // full severity range, with only the ceiling (tested separately above) varying.
+  it("keeps arrival time identical to healthy across mild, severe, and complete-occlusion severities", () => {
+    const graph = buildTestGraph();
+    const healthyTables = computeArrivalTables(graph, [], "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
+    const healthyArrival = getArrivalTimeAt(healthyTables.get("RCA-main"), 1);
+
+    for (const severity of [10, 50, 90, 99]) {
+      const objects: CardioObject[] = [stenosis({ severity, position: 0.5, length: 0.1 })];
+      const tables = computeArrivalTables(graph, objects, "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
+      expect(getArrivalTimeAt(tables.get("RCA-main"), 1), `severity=${severity}`).toBeCloseTo(healthyArrival, 5);
+    }
+
+    const occludedObjects: CardioObject[] = [calcification({ position: 0.5, length: 0.1, thickness: 100, angleSpan: 360 })];
+    const occludedTables = computeArrivalTables(graph, occludedObjects, "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
+    expect(getArrivalTimeAt(occludedTables.get("RCA-main"), 1)).toBeCloseTo(healthyArrival, 5);
+  });
+
+  it("starts the downstream concentration rising at the same time as a healthy vessel, just capped lower", () => {
+    const graph = buildTestGraph();
+    const objects: CardioObject[] = [stenosis({ severity: 90, position: 0.5, length: 0.1 })];
+    const tables = computeArrivalTables(graph, objects, "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
+    const table = tables.get("RCA-main");
+    const healthyTables = computeArrivalTables(graph, [], "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
+    const healthyTable = healthyTables.get("RCA-main");
+    const tDownstream = 0.6; // clearly past the lesion (span [0.45, 0.55])
+
+    const arrival = getArrivalTimeAt(table, tDownstream);
+    const healthyArrival = getArrivalTimeAt(healthyTable, tDownstream);
+    expect(arrival).toBeCloseTo(healthyArrival, 5);
+
+    // Right as the front arrives, concentration starts rising immediately (no stall) —
+    // toward the lesion's lower ceiling rather than 1.
+    const justAfterArrival = getConcentrationAt(table, tDownstream, arrival + 0.05, DEFAULT_CONTRAST_FLOW_PARAMS);
+    expect(justAfterArrival).toBeGreaterThan(0);
+    const ceiling = getCeilingAt(table, tDownstream);
+    expect(ceiling).toBeLessThan(0.3);
+  });
+
+  it("leaves no gap where neither the upstream nor the downstream side of a stenosis has any contrast", () => {
+    const graph = buildTestGraph();
+    const objects: CardioObject[] = [stenosis({ severity: 90, position: 0.5, length: 0.1 })];
+    const tables = computeArrivalTables(graph, objects, "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
+    const table = tables.get("RCA-main");
+    const tUpstream = 0.4; // clearly before the lesion (span [0.45, 0.55])
+    const tDownstream = 0.6; // clearly after it
+
+    // Find the last moment upstream still shows any contrast, and the first moment
+    // downstream begins to. With a constant front speed these should now overlap or sit
+    // right next to each other, never separated by a long stretch of total blankness.
+    const step = 0.1;
+    let lastUpstreamVisible = -1;
+    let firstDownstreamVisible = -1;
+    for (let elapsed = 0; elapsed <= 10; elapsed += step) {
+      const up = getConcentrationAt(table, tUpstream, elapsed, DEFAULT_CONTRAST_FLOW_PARAMS);
+      const down = getConcentrationAt(table, tDownstream, elapsed, DEFAULT_CONTRAST_FLOW_PARAMS);
+      if (up > 0.01) lastUpstreamVisible = elapsed;
+      if (down > 0.01 && firstDownstreamVisible < 0) firstDownstreamVisible = elapsed;
+    }
+    expect(lastUpstreamVisible).toBeGreaterThan(0);
+    expect(firstDownstreamVisible).toBeGreaterThan(0);
+    expect(firstDownstreamVisible - lastUpstreamVisible).toBeLessThan(0.5);
+  });
+
+  it("still makes a true 100% occlusion's downstream concentration stay at 0 forever, despite the front arriving normally", () => {
+    const graph = buildTestGraph();
+    const objects: CardioObject[] = [
+      calcification({ position: 0.5, length: 0.1, thickness: 100, angleSpan: 360 }),
+    ];
+    const tables = computeArrivalTables(graph, objects, "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
+    const table = tables.get("RCA-main");
+    // The front reaches t=1 at the normal, undelayed time...
+    const healthyTables = computeArrivalTables(graph, [], "RCA", DEFAULT_CONTRAST_FLOW_PARAMS);
+    expect(getArrivalTimeAt(table, 1)).toBeCloseTo(getArrivalTimeAt(healthyTables.get("RCA-main"), 1), 5);
+    // ...but concentration there never rises, at any elapsed time, because the ceiling is 0.
+    expect(getConcentrationAt(table, 1, 1e6, DEFAULT_CONTRAST_FLOW_PARAMS)).toBe(0);
   });
 });

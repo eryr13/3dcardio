@@ -85,15 +85,52 @@ export function getObjectsForVessel(objects: CardioObject[], vesselId: VesselId)
   return objects.filter((object) => object.vesselId === vesselId);
 }
 
-function objectCoversT(object: CardioObject, t: number): boolean {
-  const half = object.length / 2;
-  return t >= object.position - half && t <= object.position + half;
+/**
+ * オブジェクトの区間([position-half, position+half])の何%を入口/出口テーパーに
+ * 割り当てるか。中央の(1 - 2*LESION_TAPER_FRACTION) = 80%が最狭窄プラトー、
+ * 両端それぞれ10%がテーパー(lesionTaperProfile参照)。utils/contrastFlow.tsが
+ * 到達時刻・通過係数の積分でテーパー区間の境界t値を再現するのにも使うためexportする。
+ */
+export const LESION_TAPER_FRACTION = 0.1;
+
+/** length=0(点)の縮退を避けるための下限(他のジオメトリ生成コードと同じ値)。 */
+const MIN_HALF_LENGTH = 0.005;
+
+function smoothstep(x: number): number {
+  const c = Math.max(0, Math.min(1, x));
+  return c * c * (3 - 2 * c);
 }
 
 /**
- * 指定した枝(vesselId+branchId)上の位置tにおける狭窄率(0〜99)。複数の狭窄が重なる場合は
- * 最大値を返す。Phase 7の「狭窄部を通過する際に流速が落ちる」表現で、中心線をサンプリング
- * しながらこの関数を呼ぶ想定。
+ * 病変(狭窄・石灰化)の区間内での「効果の強さ」プロファイル(0〜1)。
+ * s = (t - position) / half (half = length/2) を受け取り、|s|>=1(区間外)で
+ * 厳密に0、|s|<=1-2*LESION_TAPER_FRACTION(区間中央80%)で厳密に1、その間を
+ * smoothstepでなめらかに補間する。台形(両端がなだらかなスロープ、中央が
+ * 平坦な最狭窄)の形になり、区間境界(|s|=1)で血管本来の内腔とちょうど
+ * 段差なく接続する(smoothstepは両端で傾き0のため、接続点でキンクも出ない)。
+ *
+ * 狭窄の内腔プロファイル(getStenosisSeverityAt)・石灰化の内腔プロファイル
+ * (getCalcificationRadiusFractionAt)・3Dビュー/シネビューの狭窄プラーク形状
+ * (stenosisPlaqueMesh.ts)が共通でこの関数を使うことで、「内腔がどれだけ
+ * 狭くなっているか」の値がどこから参照しても常に一致する(以前は狭窄プラークの
+ * 見た目だけガウス関数でテーパーし、造影剤フローが参照する内腔比率は矩形窓の
+ * ままだったため、プラークの見た目と造影剤チューブの半径が一致せず、区間境界に
+ * 円錐状の段差が見えていた)。
+ */
+export function lesionTaperProfile(s: number): number {
+  const absS = Math.abs(s);
+  if (absS >= 1) return 0;
+  const plateauBoundary = 1 - 2 * LESION_TAPER_FRACTION;
+  if (absS <= plateauBoundary) return 1;
+  const taperProgress = (1 - absS) / (2 * LESION_TAPER_FRACTION);
+  return smoothstep(taperProgress);
+}
+
+/**
+ * 指定した枝(vesselId+branchId)上の位置tにおける狭窄率(0〜99、lesionTaperProfileで
+ * なめらかにテーパーした値)。複数の狭窄が重なる場合は最大値を返す。Phase 7の
+ * 「狭窄部を通過する際に流速が落ちる」表現で、中心線をサンプリングしながら
+ * この関数を呼ぶ想定。
  */
 export function getStenosisSeverityAt(
   objects: CardioObject[],
@@ -105,8 +142,11 @@ export function getStenosisSeverityAt(
   for (const object of objects) {
     if (object.type !== "stenosis" || object.vesselId !== vesselId || object.branchId !== branchId) continue;
     if (!object.visible) continue;
-    if (!objectCoversT(object, t)) continue;
-    if (object.severity > max) max = object.severity;
+    const half = Math.max(object.length / 2, MIN_HALF_LENGTH);
+    const profile = lesionTaperProfile((t - object.position) / half);
+    if (profile <= 0) continue;
+    const localSeverity = object.severity * profile;
+    if (localSeverity > max) max = localSeverity;
   }
   return max;
 }

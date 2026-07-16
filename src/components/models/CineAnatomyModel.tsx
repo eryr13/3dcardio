@@ -249,18 +249,18 @@ export function CineAnatomyModel() {
   // 加算するのに使う(cineSceneBridge.lumenSubtractionProxies)。狭窄は1オブジェクトに
   // つきouter/innerの2キー、石灰化はnarrowingの1キーで登録する。造影剤フローモードOFF
   // (既定)の間だけ実際にCineVesselThicknessEffect側で使われる。
-  const lumenSubtractionMeshRefsById = useRef(new Map<string, { mesh: Mesh; sign: 1 | -1 }>());
+  const lumenSubtractionMeshRefsById = useRef(new Map<string, { mesh: Mesh; sign: 1 | -1; vesselId: VesselId }>());
 
   function syncLumenSubtractionProxies() {
     if (!cineSceneBridge.current) return;
     cineSceneBridge.current.lumenSubtractionProxies = Array.from(lumenSubtractionMeshRefsById.current.entries()).map(
-      ([id, entry]): LumenSubtractionProxyEntry => ({ id, mesh: entry.mesh, sign: entry.sign }),
+      ([id, entry]): LumenSubtractionProxyEntry => ({ id, mesh: entry.mesh, sign: entry.sign, vesselId: entry.vesselId }),
     );
   }
 
-  function registerLumenSubtractionMesh(id: string, sign: 1 | -1) {
+  function registerLumenSubtractionMesh(id: string, sign: 1 | -1, vesselId: VesselId) {
     return (mesh: Mesh | null) => {
-      if (mesh) lumenSubtractionMeshRefsById.current.set(id, { mesh, sign });
+      if (mesh) lumenSubtractionMeshRefsById.current.set(id, { mesh, sign, vesselId });
       else lumenSubtractionMeshRefsById.current.delete(id);
       syncLumenSubtractionProxies();
     };
@@ -338,8 +338,8 @@ export function CineAnatomyModel() {
             object={object}
             centerline={branch.points}
             xrayMode={xrayMode}
-            onRefOuter={registerLumenSubtractionMesh(`${object.id}-outer`, -1)}
-            onRefInner={registerLumenSubtractionMesh(`${object.id}-inner`, 1)}
+            onRefOuter={registerLumenSubtractionMesh(`${object.id}-outer`, -1, object.vesselId)}
+            onRefInner={registerLumenSubtractionMesh(`${object.id}-inner`, 1, object.vesselId)}
           />
         );
       })}
@@ -355,7 +355,7 @@ export function CineAnatomyModel() {
             heartCentroid={heartCentroid}
             xrayMode={xrayMode}
             onRef={registerCalcificationMesh(object.id, xrayParams.calcificationAbsorption)}
-            onRefNarrowing={registerLumenSubtractionMesh(`${object.id}-narrowing`, -1)}
+            onRefNarrowing={registerLumenSubtractionMesh(`${object.id}-narrowing`, -1, object.vesselId)}
           />
         );
       })}

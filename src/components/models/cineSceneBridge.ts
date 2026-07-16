@@ -100,6 +100,14 @@ export interface LumenSubtractionProxyEntry {
    * 石灰化の内腔減算シェル)は-1、通常の血管同様に加算する面(狭窄の内径チューブ)は+1。
    */
   sign: 1 | -1;
+  /**
+   * このオブジェクトが属する血管。CineVesselThicknessEffectが、血管ごとに独立して
+   * 都度描画し直す濃度マスク(contrastMaskAccumTarget)を、その血管自身の厚み加算と
+   * 同じマスクでこの内腔減算プロキシにも適用するために使う——マスクは血管ループの中で
+   * 使い捨てのターゲットに毎回描き直されるため、どの血管のマスクが今有効かを
+   * このIDで対応付ける必要がある。
+   */
+  vesselId: VesselId;
 }
 
 export const cineSceneBridge: { current: CineSceneHandle | null } = { current: null };

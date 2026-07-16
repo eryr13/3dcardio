@@ -204,6 +204,47 @@ export function buildTubeFromPoints(
   return geometry;
 }
 
+/**
+ * 三角形1枚を、指定した目標法線(desiredNormal)を向くように頂点順序を自動調整して
+ * 追加する。手作業でインデックスの巻き順を数え上げるとキャップ形状のたびに間違え
+ * やすく、しかも巻き順は深度ピールのfront/back面カリング(=正しいシネX線減算)にも
+ * 直結するため、外積で実際の法線を計算し目標と逆なら頂点を入れ替える方式にして
+ * 常に正しい向きを保証する(各三角形が専用の頂点を持つため頂点共有はしない)。
+ * 石灰化シェル(calcificationMesh.ts)・狭窄プラークの端キャップ(stenosisPlaqueMesh.ts)
+ * のどちらも同じ「閉じたキャップ形状を正しい巻き順で作る」要件を持つため、
+ * 低レベルの共有ユーティリティとしてここに置く。
+ */
+export function pushOrientedTriangle(
+  positions: number[],
+  normalsOut: number[],
+  uvs: number[],
+  indices: number[],
+  pA: Vector3,
+  pB: Vector3,
+  pC: Vector3,
+  desiredNormal: Vector3,
+): void {
+  const ab = new Vector3().subVectors(pB, pA);
+  const ac = new Vector3().subVectors(pC, pA);
+  const faceNormal = new Vector3().crossVectors(ab, ac);
+  const baseIndex = positions.length / 3;
+  const [v0, v1, v2] = faceNormal.dot(desiredNormal) < 0 ? [pA, pC, pB] : [pA, pB, pC];
+  positions.push(v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z);
+  normalsOut.push(
+    desiredNormal.x,
+    desiredNormal.y,
+    desiredNormal.z,
+    desiredNormal.x,
+    desiredNormal.y,
+    desiredNormal.z,
+    desiredNormal.x,
+    desiredNormal.y,
+    desiredNormal.z,
+  );
+  uvs.push(0, 0, 1, 0, 0, 1);
+  indices.push(baseIndex, baseIndex + 1, baseIndex + 2);
+}
+
 /** 代表半径を求めるために区間内でサンプリングする点数。 */
 const RADIUS_SAMPLE_COUNT = 9;
 

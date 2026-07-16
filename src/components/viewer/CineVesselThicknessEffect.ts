@@ -706,34 +706,51 @@ export class CineVesselThicknessEffect extends Effect {
       renderer.render(this.peelScene, camera);
       proxy.material = this.vesselAccumFrontMaterial;
       renderer.render(this.peelScene, camera);
+
+      // 内腔を狭める要素(この血管に属する狭窄の外径/内径チューブ、石灰化の内腔減算用
+      // シェル)を、この血管「自身」の生厚みからその場で差し引く。狭窄は外径チューブ(-1)+
+      // 内径チューブ(+1)の2エントリで、その差(外径厚み-内径厚み=プラーク自身の厚み)が
+      // ちょうど血管の生厚みから差し引かれる。石灰化は内腔減算専用シェル(-1)の1エントリで、
+      // 血管本来の半径と内腔半径の差(内側への張り出し量)だけが差し引かれる。
+      //
+      // 濃度マスクは、この血管の直前の描画で使ったものと全く同じ状態(useConcentrationMask/
+      // 同じcontrastMaskAccumTargetのテクスチャ)を適用する——生厚みと減算分の両方に同じ
+      // マスク係数を掛けることで、両者の差(構造的に狭まった正味の厚み)がマスク係数に
+      // 比例してスケールされ、常に0以上に保たれる。以前は減算だけ常時マスク無し(常に全量
+      // 差し引く)だったため、狭窄自身の位置ではその区間の濃度(=ceiling)が低いことで
+      // マスクされた生厚みがごく小さくなる一方、減算量は満額のまま差し引かれてしまい、
+      // 正味の値が負(0にクランプ)になって狭窄部が完全に消えてしまう不具合の原因だった
+      // (3DビューのcontrastFillMesh.tsで半径とconcentrationを直接掛け合わせていた
+      // バグと同根)。この対応により、狭窄部は「細いがマスク濃度なりに写る」、末梢は
+      // 「幅は保たれたままマスク濃度なりに淡く写る」という、実際の血管造影に近い見え方になる。
+      // 造影剤フローモードOFF(useConcentrationMask=false)の間は、従来通り無条件・常時
+      // フル適用のままなので、モードOFF時の見た目に変化はない。
+      for (let index = 0; index < handle.lumenSubtractionProxies.length; index++) {
+        const entry = handle.lumenSubtractionProxies[index];
+        if (entry.vesselId !== id) continue;
+
+        const lumenProxy = this.ensureLumenSubtractionProxy(index, entry.mesh);
+        lumenProxy.matrixWorld.copy(entry.mesh.matrixWorld);
+        this.activateOnlyProxy(lumenProxy);
+
+        renderer.setRenderTarget(this.vesselAccumTarget);
+        (this.vesselAccumBackMaterial.uniforms.uSign as Uniform).value = entry.sign;
+        (this.vesselAccumFrontMaterial.uniforms.uSign as Uniform).value = -entry.sign;
+        (this.vesselAccumBackMaterial.uniforms.uUseConcentrationMask as Uniform).value = useConcentrationMask;
+        (this.vesselAccumFrontMaterial.uniforms.uUseConcentrationMask as Uniform).value = useConcentrationMask;
+        (this.vesselAccumBackMaterial.uniforms.uConcentrationMask as Uniform).value = useConcentrationMask
+          ? this.contrastMaskAccumTarget.texture
+          : null;
+        (this.vesselAccumFrontMaterial.uniforms.uConcentrationMask as Uniform).value = useConcentrationMask
+          ? this.contrastMaskAccumTarget.texture
+          : null;
+        lumenProxy.material = this.vesselAccumBackMaterial;
+        renderer.render(this.peelScene, camera);
+        lumenProxy.material = this.vesselAccumFrontMaterial;
+        renderer.render(this.peelScene, camera);
+      }
     }
 
-    // 内腔を狭める要素(狭窄の外径/内径チューブ、石灰化の内腔減算用シェル): 専用の
-    // テクスチャチャンネルを増やさず、血管と同じ共有ターゲットにentry.signで符号付けして
-    // 追加描画する。狭窄は外径チューブ(-1)+内径チューブ(+1)の2エントリで、その差
-    // (外径厚み-内径厚み=プラーク自身の厚み)がちょうど血管の生厚みから差し引かれる。
-    // 石灰化は内腔減算専用シェル(-1)の1エントリで、血管本来の半径と内腔半径の差
-    // (内側への張り出し量)だけが差し引かれる。狭窄・石灰化による構造的な狭窄は
-    // 造影剤の有無とは無関係な解剖学的事実のため、モードのON/OFFに関わらず常時適用する
-    // (濃度マスクは掛けない——上の血管ループでこれらのマテリアルに濃度マスクを
-    // 設定済みのため、ここで明示的にfalseへ戻さないと直前の血管のマスクが残ってしまう)。
-    handle.lumenSubtractionProxies.forEach((entry, index) => {
-      anyVesselVisible = true;
-
-      const proxy = this.ensureLumenSubtractionProxy(index, entry.mesh);
-      proxy.matrixWorld.copy(entry.mesh.matrixWorld);
-      this.activateOnlyProxy(proxy);
-
-      renderer.setRenderTarget(this.vesselAccumTarget);
-      (this.vesselAccumBackMaterial.uniforms.uSign as Uniform).value = entry.sign;
-      (this.vesselAccumFrontMaterial.uniforms.uSign as Uniform).value = -entry.sign;
-      (this.vesselAccumBackMaterial.uniforms.uUseConcentrationMask as Uniform).value = false;
-      (this.vesselAccumFrontMaterial.uniforms.uUseConcentrationMask as Uniform).value = false;
-      proxy.material = this.vesselAccumBackMaterial;
-      renderer.render(this.peelScene, camera);
-      proxy.material = this.vesselAccumFrontMaterial;
-      renderer.render(this.peelScene, camera);
-    });
     for (let i = handle.lumenSubtractionProxies.length; i < this.lumenSubtractionProxies.length; i++) {
       const stale = this.lumenSubtractionProxies[i];
       if (stale) {

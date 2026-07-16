@@ -3,16 +3,37 @@
 // 計算する。Phase 8(心筋灌流)が「どの枝がどの領域を灌流するか」「狭窄により虚血に
 // なっているか」を判定する際に、ここで作る枝ごとの到達時刻テーブルをそのまま再利用できる
 // ように設計している。
+//
+// 伝播モデルの考え方(重要): 狭窄・石灰化の効果は「伝播フロントの速度を落とす」ことでは
+// 表現しない。フロントの到達時刻(arrivalSeconds)は、狭窄の有無に関わらず中心線に沿った
+// 距離をbaseSpeedで割った一定速度の累積であり、常に近位から遠位へ淀みなく進む
+// (integrateArrivalTable参照)。狭窄・石灰化の効果は代わりに「その先へ供給できる
+// 造影剤の最大濃度(ceilings)」の低下として表現する——起始部からその点までの経路上に
+// ある狭窄・石灰化それぞれのpassThroughCoefficientの積が、その点でフロント到達後に
+// 到達しうる濃度の上限になる(getConcentrationAt参照)。
+//
+// この設計にした理由: 以前はフロントの速度自体を内腔の断面積比率で落としていたが、
+// これだと高度狭窄区間の通過に何秒もかかる計算になり、実際の再生では「フロントが
+// 狭窄部の直後で何秒も止まって見え、その間に手前のボーラスが完全に洗い流されてから
+// ようやく末梢に色がつき始める」という不自然な時系列になっていた。速度をどう調整しても
+// この「詰まる」感覚は消えなかった。実際の血流では、造影剤は上流の供給に応じて下流の
+// 各点の濃度が時間差で立ち上がるのであり、狭窄の効果は「先端の進行を止める/遅らせる」
+// ことではなく「狭窄を境に、その先へ供給できる造影剤の総量(=到達できる最大濃度)を
+// 減らす」ことである、という考え方に転換した。これにより、フロントは常に一定速度で
+// 末梢まで滑らかに到達し、狭窄より末梢は(到達は正常なタイミングのまま)より薄い濃度
+// でしか造影されない、という臨床的に正しい見え方になる。
 
 import type { VesselId } from "../types/anatomy";
 import type { CardioObject } from "../types/object";
-import { getStenosisSeverityAt } from "../types/object";
+import { LESION_TAPER_FRACTION, getStenosisSeverityAt, lesionTaperProfile } from "../types/object";
 import type { CenterlineBranch, VesselGraph } from "../components/models/vesselGraph";
 import { getBranch, getMainTrunk } from "../components/models/vesselGraph";
+import { sampleCenterline } from "../components/models/vesselCenterline";
 
 export interface ContrastFlowParams {
   /**
-   * 狭窄・石灰化が全く無い区間での造影剤先端の伝播速度(中心線の弧長と同じ「シーン単位/秒」。
+   * 造影剤先端の伝播速度(中心線の弧長と同じ「シーン単位/秒」)。狭窄・石灰化の
+   * 有無に関わらず常に一定(伝播モデルの考え方、ファイル先頭のコメント参照)。
    * このGLBモデルは実世界のメートル単位ではなくシーン固有の任意スケールを使っており
    * (実測: RCA本幹の弧長は約5.6シーン単位)、実際の血流速度(cm/s)をそのまま単位換算
    * するのではなく、本幹全体が1〜2秒程度で造影されるように実機で調整した値。
@@ -50,15 +71,17 @@ export function getElapsedContrastSeconds(contrast: ContrastPlaybackState): numb
   return contrast.accumulatedSeconds + live;
 }
 
-// 除算の安全のためだけの下限(内腔面積比率そのものは0まで許容し、完全閉塞を正しく表現する)。
-// この値は「実用上、どんな再生時間内でも先端が絶対に到達しない」くらい小さい速度に
-// 落とすためのものであり、100%閉塞のセグメントより先には事実上永久に造影剤が届かない。
-const MIN_AREA_FRACTION_FOR_SPEED = 1e-6;
+/** length=0(点)の縮退を避けるための下限(types/object.tsの同名定数と同じ値)。 */
+const MIN_HALF_LENGTH = 0.005;
 
 /**
  * 指定した枝上の位置tにおける、石灰化による内腔半径比率(0〜1、1=狭窄なし)。
  * 複数の石灰化が重なる場合は最も厳しい(最小の)値を返す。thicknessは全周に対する
  * 半径方向の減少量、angleSpan/360は円周方向のカバー率で重み付けする近似。
+ * lesionTaperProfileで区間境界へ向けてなめらかにテーパーさせる(石灰化の見た目
+ * そのもの、calcificationMesh.tsは区間全体で一様な厚みのまま変更しないが、造影剤
+ * フローが参照するこの「内腔がどれだけ狭いか」の値だけは、血管本来の内腔との
+ * 接続部に段差が出ないようテーパーさせる)。
  */
 export function getCalcificationRadiusFractionAt(
   objects: CardioObject[],
@@ -70,10 +93,11 @@ export function getCalcificationRadiusFractionAt(
   for (const object of objects) {
     if (object.type !== "calcification" || object.vesselId !== vesselId || object.branchId !== branchId) continue;
     if (!object.visible) continue;
-    const half = object.length / 2;
-    if (t < object.position - half || t > object.position + half) continue;
+    const half = Math.max(object.length / 2, MIN_HALF_LENGTH);
+    const profile = lesionTaperProfile((t - object.position) / half);
+    if (profile <= 0) continue;
     const coverageFraction = Math.min(1, Math.max(0, object.angleSpan / 360));
-    const radiusFraction = 1 - (object.thickness / 100) * coverageFraction;
+    const radiusFraction = 1 - (object.thickness / 100) * coverageFraction * profile;
     if (radiusFraction < minFraction) minFraction = radiusFraction;
   }
   return Math.max(0, minFraction);
@@ -99,17 +123,6 @@ export function getLumenRadiusFractionAt(
   const stenosisRadiusFraction = 1 - stenosisSeverity / 100;
   const calcificationRadiusFraction = getCalcificationRadiusFractionAt(objects, vesselId, branchId, t);
   return Math.max(0, Math.min(stenosisRadiusFraction, calcificationRadiusFraction));
-}
-
-/** 流速低下の計算に使う断面積比率。半径比率の2乗(円の面積は半径の2乗に比例)。 */
-export function computeLumenAreaFractionAt(
-  objects: CardioObject[],
-  vesselId: VesselId,
-  branchId: string,
-  t: number,
-): number {
-  const radiusFraction = getLumenRadiusFractionAt(objects, vesselId, branchId, t);
-  return radiusFraction * radiusFraction;
 }
 
 /**
@@ -231,6 +244,51 @@ export type ArrivalTables = Map<string, ArrivalTable>;
 /** ceilings計算時、この値未満のradiusFractionを「狭小化区間の中にいる」とみなす閾値。 */
 const RESTRICTION_RADIUS_FRACTION_THRESHOLD = 1 - 1e-9;
 
+/**
+ * 積分点をテーパー区間内で細分割する分割数(入口・出口それぞれ)。中心線本来の
+ * サンプリング間隔(RCA本幹で約2.6%)は、典型的な狭窄の長さ(UI既定で血管全長の
+ * 8%程度)に対するテーパー幅(その10%=0.8%)よりずっと粗い。素通しで積分すると、
+ * テーパー全体(場合によってはプラトーの一部まで)が中心線の1区間に埋もれてしまい、
+ * その区間の通過係数(ceiling)が区間の両端を結ぶ直線で補間されることになる
+ * ——実際には狭窄の立ち上がりはもっと急峻(区間のごく手前で起こる)なため、この
+ * 線形補間はceilingを実際より緩く見積もってしまう(=造影剤がくびれを実際に
+ * 通過し切る前に、その先(末梢・直後の分岐)が実際より濃く色づいてしまう)。
+ */
+const LESION_CHECKPOINT_SUBDIVISIONS = 4;
+
+/**
+ * 指定した枝上にある狭窄・石灰化オブジェクトそれぞれについて、そのテーパー区間
+ * (入口・出口それぞれ)を細分割した追加のt値を集める。integrateArrivalTableが
+ * これを中心線本来の点列とマージしてから積分することで、中心線のサンプリング
+ * 密度に関わらずテーパーの形(=通過係数ceilingの変化する位置)を正しく解像する
+ * (病変が無い枝ではcheckpointsが空になり、ネイティブな点列だけを使う
+ * 従来通りの挙動になる)。到達時刻(arrivalSeconds)は距離÷baseSpeedの一定速度
+ * 積分のため、この細分割の恩恵を受けるのはceilingの計算だけである。
+ */
+function collectLesionCheckpoints(objects: CardioObject[], vesselId: VesselId, branchId: string): number[] {
+  const checkpoints: number[] = [];
+  for (const object of objects) {
+    if (object.type !== "stenosis" && object.type !== "calcification") continue;
+    if (object.vesselId !== vesselId || object.branchId !== branchId || !object.visible) continue;
+    const half = Math.max(object.length / 2, MIN_HALF_LENGTH);
+    const taperWidth = 2 * LESION_TAPER_FRACTION * half;
+    const tStart = object.position - half;
+    const tPlateauStart = tStart + taperWidth;
+    const tPlateauEnd = object.position + half - taperWidth;
+    const tEnd = object.position + half;
+    for (const [from, to] of [
+      [tStart, tPlateauStart],
+      [tPlateauEnd, tEnd],
+    ] as const) {
+      for (let k = 0; k <= LESION_CHECKPOINT_SUBDIVISIONS; k++) {
+        const t = from + ((to - from) * k) / LESION_CHECKPOINT_SUBDIVISIONS;
+        if (t >= 0 && t <= 1) checkpoints.push(t);
+      }
+    }
+  }
+  return checkpoints;
+}
+
 function integrateArrivalTable(
   branch: CenterlineBranch,
   objects: CardioObject[],
@@ -239,45 +297,80 @@ function integrateArrivalTable(
   startTime: number,
   startCeiling: number,
 ): ArrivalTable {
-  const points = branch.points;
+  const nativePoints = branch.points;
+
+  // 中心線本来の点列に、この枝上の病変のテーパー区間を細分割した追加のt値
+  // (collectLesionCheckpoints)をマージしてから積分する。追加点の3D位置は
+  // sampleCenterlineで中心線を線形補間して求める。
+  const checkpoints = collectLesionCheckpoints(objects, vesselId, branch.id);
+  const tSet = new Set<number>(nativePoints.map((p) => p.t));
+  for (const t of checkpoints) tSet.add(t);
+  const sortedTs = Array.from(tSet).sort((a, b) => a - b);
+
+  const nativePositionByT = new Map(nativePoints.map((p) => [p.t, p.position] as const));
+  const points = sortedTs.map((t) => ({
+    position: nativePositionByT.get(t) ?? sampleCenterline(nativePoints, t).point,
+    t,
+  }));
+
   const ts: number[] = [points[0].t];
   const arrivalSeconds: number[] = [startTime];
   let time = startTime;
 
-  // ceilings: 狭小化区間(radiusFraction<1が連続する範囲)を1つの病変として検出し、
-  // その区間内で最も厳しいradiusFractionから通過係数を1回だけ算出して掛け合わせる。
-  // 速度計算(上のtime)のようにセグメントごとに逐次乗算する方式にはしていない
-  // ——そうすると同じ病変でも中心線のサンプリング密度が高いほど余計に減衰してしまう
-  // (病変の長さや区間分割数に依存せず、severity/thicknessという値だけで係数が
-  // 決まるようにするため)。区間を抜けた(radiusFractionが1に戻った)瞬間に効果を確定させる。
+  // ceilings: 狭小化区間(radiusFraction<1が連続する範囲、lesionTaperProfileにより
+  // 入口テーパー→最狭窄プラトー→出口テーパーの台形状に連続変化する)に入ると、
+  // その時点までの区間内最小radiusFractionを都度更新しながら
+  // ceiling = 区間に入る直前のceiling × passThroughCoefficient(その時点までの最小値)
+  // を「区間に入るたびに毎回計算し直す」(乗算を繰り返し積み上げるのではなく、
+  // 常に最新の最小値から作り直す)ことで、以下を両立する:
+  // - 入口テーパーを進むにつれ、radiusFractionが下がるほどceilingも滑らかに
+  //   絞られていき、ちょうど最狭窄プラトーに到達した時点で最終的な(その病変の)
+  //   最も厳しい値に達する(=「入口テーパーで内腔が十分狭くなるあたりで流れが
+  //   大きく制限される」という要求どおりの位置で絞り込みが完了する)。
+  // - 出口テーパーでradiusFractionが再び上がっても、Math.minで最小値を更新する
+  //   だけなので緩まない(一度絞られた流量は、その先で血管が元の太さに戻っても
+  //   回復しない、という生理的に正しい向き)。
+  // - 病変の長さや中心線のサンプリング密度に関わらず、最終的なceilingの値は
+  //   その病変の最小radiusFractionだけで決まる(セグメントごとに逐次乗算する
+  //   方式だとサンプリング密度が高いほど余計に減衰してしまうため、それは避けている)。
   const ceilings: number[] = [startCeiling];
   let ceiling = startCeiling;
   let inRestriction = false;
-  let restrictionMinRadiusFraction = 1;
+  let ceilingBeforeRegion = startCeiling;
+  let regionMinRadiusFraction = 1;
 
   const r0 = getLumenRadiusFractionAt(objects, vesselId, branch.id, points[0].t);
   if (r0 < RESTRICTION_RADIUS_FRACTION_THRESHOLD) {
     inRestriction = true;
-    restrictionMinRadiusFraction = r0;
+    regionMinRadiusFraction = r0;
+    ceiling = ceilingBeforeRegion * passThroughCoefficient(regionMinRadiusFraction);
+    ceilings[0] = ceiling;
   }
 
+  // 到達時刻は狭窄・石灰化の有無に関わらず、距離をbaseSpeedで割った一定速度の
+  // 累積で決まる(ファイル先頭のコメント参照)。フロントは狭窄部でも淀みなく通過し、
+  // 常に近位から遠位へ一定速度で進む——狭窄の効果は下のceilings(到達可能な
+  // 最大濃度)の低下としてのみ表現する。
+  const speed = Math.max(params.baseSpeed, 1e-6);
   for (let i = 1; i < points.length; i++) {
     const prev = points[i - 1];
     const curr = points[i];
     const segmentLength = prev.position.distanceTo(curr.position);
-    const midT = (prev.t + curr.t) / 2;
-    const areaFraction = Math.max(computeLumenAreaFractionAt(objects, vesselId, branch.id, midT), MIN_AREA_FRACTION_FOR_SPEED);
-    const speed = Math.max(params.baseSpeed, 1e-6) * areaFraction;
     time += segmentLength / speed;
     ts.push(curr.t);
     arrivalSeconds.push(time);
 
     const r = getLumenRadiusFractionAt(objects, vesselId, branch.id, curr.t);
     if (r < RESTRICTION_RADIUS_FRACTION_THRESHOLD) {
-      restrictionMinRadiusFraction = inRestriction ? Math.min(restrictionMinRadiusFraction, r) : r;
+      if (!inRestriction) {
+        ceilingBeforeRegion = ceiling;
+        regionMinRadiusFraction = r;
+      } else {
+        regionMinRadiusFraction = Math.min(regionMinRadiusFraction, r);
+      }
+      ceiling = ceilingBeforeRegion * passThroughCoefficient(regionMinRadiusFraction);
       inRestriction = true;
-    } else if (inRestriction) {
-      ceiling *= passThroughCoefficient(restrictionMinRadiusFraction);
+    } else {
       inRestriction = false;
     }
     ceilings.push(ceiling);

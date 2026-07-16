@@ -11,7 +11,7 @@ import type { BufferGeometry } from "three";
 import type { VesselId } from "../../types/anatomy";
 import type { CardioObject } from "../../types/object";
 import type { ArrivalTables, ContrastFlowParams } from "../../utils/contrastFlow";
-import { getConcentrationAt, getLumenRadiusFractionAt } from "../../utils/contrastFlow";
+import { getCeilingAt, getConcentrationAt, getLumenRadiusFractionAt } from "../../utils/contrastFlow";
 import { buildTubeFromPoints, mergeIndexedGeometries } from "./stentLatticeMesh";
 import type { VesselGraph } from "./vesselGraph";
 
@@ -77,7 +77,20 @@ export function buildContrastFillGeometry(
       const concentration = getConcentrationAt(table, p.t, elapsedSeconds, flowParams);
       if (concentration > 1e-3) anyConcentration = true;
       const radiusFraction = getLumenRadiusFractionAt(objects, vesselId, branch.id, p.t);
-      radii.push(p.radius * radiusFraction * concentration);
+      // 半径は「この地点自身が、到達しうる最大濃度(ceiling)のうちどれだけ立ち上がって
+      // いるか」(0〜1、riseTime中は0→1、プラトーで1、ウォッシュアウトで1→0)だけで
+      // 決める。狭窄の通過係数(ceiling)そのものをradiusFractionと二重に半径へ
+      // 掛け合わせることはしない——狭窄のくびれ(radiusFractionが小さい)は、その
+      // 区間自身のceilingも同時に小さい(前回実装の「入口テーパーでceilingが絞られる」
+      // 設計上、狭窄区間内は既にceilingが下がっている)ため、両方を掛けると半径が
+      // ほぼゼロになり、くびれの直後で管が事実上消えて見える。到達時刻自体は
+      // 途切れなく末梢まで進んでいるにもかかわらず、これが「先端が狭窄部で止まって
+      // 丸く残る」ように見える不具合の直接の原因だった。末梢が薄く写るという表現は、
+      // 実際の血管造影と同様、血管が細くなるのではなく色が薄くなる形にする——
+      // 下のcontrastFillColor(生の濃度を使う)側で色の濃淡として表す。
+      const ceiling = getCeilingAt(table, p.t);
+      const localFullness = ceiling > 1e-4 ? Math.min(1, concentration / ceiling) : 0;
+      radii.push(p.radius * radiusFraction * localFullness);
       if (colors && baseColor) colors.push(contrastFillColor(baseColor, concentration));
     }
 
