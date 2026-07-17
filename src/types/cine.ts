@@ -46,6 +46,17 @@ export interface CineXrayParams {
    * 既定値は calcificationAbsorption よりさらに大きくしてある。
    */
   stentAbsorption: number;
+  /**
+   * Phase 9: ガイディングカテーテルのBeer-Lambert吸収係数。カテーテルは血管と同程度の
+   * 太さがあるため、ステントのような極端な係数は不要——vesselAbsorptionより明確に
+   * 大きい程度で「はっきりした管状の陰影」になる。
+   */
+  catheterAbsorption: number;
+  /**
+   * Phase 9: ガイドワイヤーのBeer-Lambert吸収係数。ワイヤーはステントのストラットと
+   * 同程度に細い金属線のため、既定値もstentAbsorptionと同程度の大きさにしてある。
+   */
+  wireAbsorption: number;
   /** 横隔膜/脊椎のダミーシルエットを背景に薄く表示するか(低優先度オプション) */
   showBackgroundAnatomy: boolean;
   /**

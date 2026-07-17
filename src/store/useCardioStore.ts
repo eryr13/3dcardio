@@ -20,6 +20,9 @@ import type { ContrastState } from "../types/contrast";
 import type { ContrastFlowParams } from "../utils/contrastFlow";
 import { DEFAULT_CONTRAST_FLOW_PARAMS } from "../utils/contrastFlow";
 import type { PerfusionMode, PerfusionState } from "../types/perfusion";
+import type { GuideCatheterPlacement } from "../components/models/guideDeviceMesh";
+import type { GuideDeviceState } from "../types/guideDevice";
+import { getMainTrunk, getVesselGraph } from "../components/models/vesselGraph";
 
 /**
  * メインビューの初期カメラ位置。CameraRig.tsx が実際にマウントした際もこの値を使う
@@ -161,6 +164,25 @@ interface CardioStore {
    */
   perfusion: PerfusionState;
   setPerfusionMode: (mode: PerfusionMode) => void;
+
+  /** Phase 9: ガイドワイヤー・ガイディングカテーテルのデモ表示。 */
+  guideDevice: GuideDeviceState;
+  setGuideDeviceEnabled: (enabled: boolean) => void;
+  setGuideDeviceShowCatheter: (show: boolean) => void;
+  setGuideDeviceShowWire: (show: boolean) => void;
+  /** 対象血管を変えると、その血管の本幹をワイヤーの目標枝に既定で戻し、進行度もリセットする。 */
+  setGuideDeviceTargetVessel: (vesselId: VesselId) => void;
+  setGuideDeviceTargetBranch: (branchId: string) => void;
+  setGuideDeviceInsertionPhase: (phase: number) => void;
+  setGuideDevicePlaying: (playing: boolean) => void;
+  /**
+   * カテーテル・ワイヤーの現在の配置(先端位置・向き等)。Phase 10のバックアップ力
+   * 簡易評価が参照しやすいよう、GuideDeviceMeshes.tsx/CineAnatomyModel.tsxが
+   * ジオメトリを再計算するたびにここへ書き戻す(このデータはvesselIdやprogressから
+   * 一意に決まる副産物であり、store自身が導出するものではない)。
+   */
+  guideDevicePlacement: GuideCatheterPlacement | null;
+  setGuideDevicePlacement: (placement: GuideCatheterPlacement | null) => void;
 }
 
 export interface CameraAngleRequest {
@@ -220,6 +242,8 @@ export const DEFAULT_CINE_XRAY_PARAMS: CineXrayParams = {
   vesselAbsorption: 15,
   calcificationAbsorption: 3,
   stentAbsorption: 220,
+  catheterAbsorption: 30,
+  wireAbsorption: 250,
   showBackgroundAnatomy: false,
   heartAbsorption: 1.0,
   vesselsOnly: false,
@@ -256,6 +280,17 @@ const initialContrast: ContrastState = {
 
 const initialPerfusion: PerfusionState = {
   mode: "off",
+};
+
+/** 既定はRCA本幹への挿入(RCA-mainという命名規則はscripts/extract_centerlines.py参照)。 */
+const initialGuideDevice: GuideDeviceState = {
+  enabled: false,
+  showCatheter: true,
+  showWire: true,
+  targetVesselId: "RCA",
+  targetBranchId: "RCA-main",
+  insertionPhase: 0,
+  playing: false,
 };
 
 export const useCardioStore = create<CardioStore>((set) => ({
@@ -467,6 +502,39 @@ export const useCardioStore = create<CardioStore>((set) => ({
 
   perfusion: initialPerfusion,
   setPerfusionMode: (mode) => set((state) => ({ perfusion: { ...state.perfusion, mode } })),
+
+  guideDevice: initialGuideDevice,
+
+  setGuideDeviceEnabled: (enabled) => set((state) => ({ guideDevice: { ...state.guideDevice, enabled } })),
+
+  setGuideDeviceShowCatheter: (show) =>
+    set((state) => ({ guideDevice: { ...state.guideDevice, showCatheter: show } })),
+
+  setGuideDeviceShowWire: (show) => set((state) => ({ guideDevice: { ...state.guideDevice, showWire: show } })),
+
+  setGuideDeviceTargetVessel: (vesselId) =>
+    set((state) => ({
+      guideDevice: {
+        ...state.guideDevice,
+        targetVesselId: vesselId,
+        targetBranchId: getMainTrunk(getVesselGraph(vesselId)).id,
+        insertionPhase: 0,
+        playing: false,
+      },
+    })),
+
+  setGuideDeviceTargetBranch: (branchId) =>
+    set((state) => ({
+      guideDevice: { ...state.guideDevice, targetBranchId: branchId, insertionPhase: 0, playing: false },
+    })),
+
+  setGuideDeviceInsertionPhase: (phase) =>
+    set((state) => ({ guideDevice: { ...state.guideDevice, insertionPhase: Math.max(0, Math.min(2, phase)) } })),
+
+  setGuideDevicePlaying: (playing) => set((state) => ({ guideDevice: { ...state.guideDevice, playing } })),
+
+  guideDevicePlacement: null,
+  setGuideDevicePlacement: (placement) => set({ guideDevicePlacement: placement }),
 }));
 
 function createObjectId(): string {

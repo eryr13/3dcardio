@@ -5,6 +5,7 @@ import { ObjectPanel } from "./ObjectPanel";
 import { CineControls } from "./CineControls";
 import { ContrastControls } from "./ContrastControls";
 import { PerfusionControls } from "./PerfusionControls";
+import { GuideDeviceControls } from "./GuideDeviceControls";
 import { CArmCalibration } from "./CArmCalibration";
 import { CArmReadout } from "./CArmReadout";
 import { DebugPanel } from "./DebugPanel";
@@ -20,6 +21,7 @@ export function SidePanel() {
       <CineControls />
       <ContrastControls />
       <PerfusionControls />
+      <GuideDeviceControls />
       <CArmCalibration />
       <CArmReadout />
       <DebugPanel />

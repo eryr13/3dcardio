@@ -6,6 +6,7 @@ import type { AnatomyDisplayState, VesselId, ModelSource } from "../../types/ana
 import type { CardioObject, StentObject } from "../../types/object";
 import { useCardioStore } from "../../store/useCardioStore";
 import { ContrastFillTube } from "./ContrastFillTube";
+import { GuideDeviceMeshes } from "./GuideDeviceMeshes";
 import { HeartModel } from "./HeartModel";
 import { HeartbeatGroup } from "./HeartbeatGroup";
 import { HeartPerfusionOverlay } from "./HeartPerfusionOverlay";
@@ -315,6 +316,8 @@ function GltfAnatomyModels({ url }: { url: string }) {
       {perfusionMode !== "off" && (
         <HeartPerfusionOverlay heartMesh={meshesByName.get("HEART")} graphs={graphs} objects={objects} />
       )}
+
+      <GuideDeviceMeshes heartMesh={meshesByName.get("HEART")} heartCentroid={heartCentroid} graphs={graphs} />
 
       {segmentMode &&
         VESSEL_IDS.flatMap((trunkId) => {

@@ -23,6 +23,11 @@ const SLIDERS: SliderDef[] = [
   // vesselAbsorptionより明確に小さい。
   { key: "calcificationAbsorption", label: "石灰化吸収係数", min: 0.1, max: 20, step: 0.1, decimals: 1 },
   { key: "stentAbsorption", label: "ステント吸収係数", min: 0.5, max: 400, step: 1 },
+  // カテーテルは血管と同程度の太さなので、吸収係数もvesselAbsorptionに近い域で
+  // 「はっきりした管状の陰影」になる(types/cine.ts参照)。
+  { key: "catheterAbsorption", label: "カテーテル吸収係数", min: 0.5, max: 100, step: 0.5 },
+  // ワイヤーはステントのストラットと同程度に細いため、実用域もstentAbsorptionと同程度。
+  { key: "wireAbsorption", label: "ガイドワイヤー吸収係数", min: 0.5, max: 400, step: 1 },
   // 心筋(心臓の陰影)も血管・石灰化・ステントと同じBeer-Lambert吸収係数として扱う
   // (別立てのopacityキャップではない)。造影剤(血管)より十分小さい値が既定。
   { key: "heartAbsorption", label: "心筋吸収係数", min: 0.1, max: 10, step: 0.1, decimals: 1 },

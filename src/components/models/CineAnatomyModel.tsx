@@ -10,9 +10,17 @@ import { useCalcificationGeometry, useStenosisPlaqueGeometry, useStentGeometry, 
 import { cineSceneBridge } from "./cineSceneBridge";
 import type { LumenSubtractionProxyEntry } from "./cineSceneBridge";
 import type { StentLatticeParams } from "./stentLatticeMesh";
+import {
+  CATHETER_RADIUS_RATIO,
+  WIRE_RADIUS_RATIO,
+  computeHeartScale,
+  useGuideCatheterGeometry,
+  useGuideCatheterPath,
+  useGuideWireGeometry,
+} from "./useGuideDevicePath";
 import type { CenterlinePoint } from "./vesselCenterline";
 import type { VesselGraph } from "./vesselGraph";
-import { getBranch, getVesselGraph } from "./vesselGraph";
+import { getBranch, getMainTrunk, getVesselGraph } from "./vesselGraph";
 
 /** メインビューと同じGLB。将来DICOM由来メッシュに差し替える際もここを変えるだけでよい。 */
 export const REALISTIC_HEART_URL = "/models/heart-realistic.glb";
@@ -110,6 +118,7 @@ export function CineAnatomyModel() {
   const xrayParams = useCardioStore((s) => s.cine.xrayParams);
   const stentLatticeParams = useCardioStore((s) => s.stentLatticeParams);
   const contrastFlowModeEnabled = useCardioStore((s) => s.contrast.enabled);
+  const guideDevice = useCardioStore((s) => s.guideDevice);
 
   const built = useMemo(() => {
     const root = scene.clone(true);
@@ -161,6 +170,21 @@ export function CineAnatomyModel() {
 
   const contrastFillMaterial = useMemo(() => createContrastFillMaterial(), []);
 
+  // Phase 9: ガイディングカテーテル・ガイドワイヤーの経路計算(メインビュー側の
+  // GuideDeviceMeshes.tsxと同じ純粋関数・フックを再利用する)。配置情報(placement)の
+  // storeへの書き戻しはメインビュー側だけが行う(シネビューは読み取り専用の描画のみ)。
+  const heartScale = useMemo(() => computeHeartScale(built.meshesByName.get("HEART")), [built]);
+  const guideGraph = built.graphs.get(guideDevice.targetVesselId);
+  const catheterPath = useGuideCatheterPath(guideGraph, heartCentroid, heartScale, guideDevice.targetVesselId);
+  const guideOstiumRadius = guideGraph ? getMainTrunk(guideGraph).points[0]?.radius ?? 0.03 : 0.03;
+  const catheterRadius = guideOstiumRadius * CATHETER_RADIUS_RATIO;
+  const wireRadius = guideOstiumRadius * WIRE_RADIUS_RATIO;
+  const catheterProgress = Math.min(1, guideDevice.insertionPhase);
+  const wireProgress = Math.max(0, guideDevice.insertionPhase - 1);
+  const catheterGeometry = useGuideCatheterGeometry(catheterPath, catheterRadius, catheterProgress);
+  const wireGeometry = useGuideWireGeometry(guideGraph, guideDevice.targetBranchId, wireRadius, wireProgress);
+  const guideDeviceMaterial = useMemo(() => createObjectSilhouetteMaterial("#b8bcc2"), []);
+
   useEffect(() => {
     const vesselMeshes: Partial<Record<VesselId, Mesh>> = {};
     for (const id of VESSEL_IDS) {
@@ -207,19 +231,32 @@ export function CineAnatomyModel() {
   // 深度ピール密度表現に使う共有アキュムレータ(cineSceneBridge.stentProxies)へ反映する。
   // CineStentLatticeのrefコールバックから呼ばれる。石灰化とは別チャンネル(ブラー無し)
   // にすることで、金属の網目らしい鋭さを保つ。加算合成方式のため件数上限は無い。
+  //
+  // Phase 9: ガイディングカテーテル・ガイドワイヤーも金属/樹脂製で常時ブラー無しに
+  // 写るべき対象のため、新しいテクスチャチャンネルを増やさず(GPU/ドライバの
+  // テクスチャユニット数上限に以前実際に抵触した経緯があるため)、このステント用の
+  // 共有アキュムレータへ別のMapから合流させて登録する。
   const stentMeshRefsById = useRef(new Map<string, { mesh: Mesh; absorption: number }>());
+  const guideDeviceMeshRefsById = useRef(new Map<string, { mesh: Mesh; absorption: number }>());
 
   function syncStentProxies() {
     if (!cineSceneBridge.current) return;
-    cineSceneBridge.current.stentProxies = Array.from(stentMeshRefsById.current.entries()).map(
-      ([id, entry]) => ({ id, mesh: entry.mesh, absorption: entry.absorption }),
-    );
+    const merged = [...stentMeshRefsById.current.entries(), ...guideDeviceMeshRefsById.current.entries()];
+    cineSceneBridge.current.stentProxies = merged.map(([id, entry]) => ({ id, mesh: entry.mesh, absorption: entry.absorption }));
   }
 
   function registerStentMesh(id: string, absorption: number) {
     return (mesh: Mesh | null) => {
       if (mesh) stentMeshRefsById.current.set(id, { mesh, absorption });
       else stentMeshRefsById.current.delete(id);
+      syncStentProxies();
+    };
+  }
+
+  function registerGuideDeviceMesh(id: string, absorption: number) {
+    return (mesh: Mesh | null) => {
+      if (mesh) guideDeviceMeshRefsById.current.set(id, { mesh, absorption });
+      else guideDeviceMeshRefsById.current.delete(id);
       syncStentProxies();
     };
   }
@@ -374,6 +411,35 @@ export function CineAnatomyModel() {
           />
         );
       })}
+      {guideDevice.enabled && (
+        <>
+          {/* スキーマ表示用のシルエット。リアルX線モード中は他のオブジェクト同様に隠し、
+              CineVesselThicknessEffectの深度ピール(ステント用の共有チャンネルに合流)で
+              描画する。ジオメトリが無い(進行度0でまだ何も表示するものが無い)間は
+              登録用メッシュ自体を描画しない——geometryが無い<mesh>をマウントすると
+              既定の空ジオメトリが登録されてしまうため。 */}
+          {guideDevice.showCatheter && catheterGeometry && (
+            <>
+              <mesh geometry={catheterGeometry} material={guideDeviceMaterial} visible={!xrayMode} />
+              <mesh
+                geometry={catheterGeometry}
+                visible={false}
+                ref={registerGuideDeviceMesh("guide-catheter", xrayParams.catheterAbsorption)}
+              />
+            </>
+          )}
+          {guideDevice.showWire && wireGeometry && (
+            <>
+              <mesh geometry={wireGeometry} material={guideDeviceMaterial} visible={!xrayMode} />
+              <mesh
+                geometry={wireGeometry}
+                visible={false}
+                ref={registerGuideDeviceMesh("guide-wire", xrayParams.wireAbsorption)}
+              />
+            </>
+          )}
+        </>
+      )}
     </HeartbeatGroup>
   );
 }
