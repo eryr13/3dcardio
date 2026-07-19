@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { PerspectiveCamera } from "three";
 import type {
+  AorticRootState,
   CameraState,
   ClippingAxis,
   ClippingState,
@@ -21,7 +22,7 @@ import type { ContrastFlowParams } from "../utils/contrastFlow";
 import { DEFAULT_CONTRAST_FLOW_PARAMS } from "../utils/contrastFlow";
 import type { PerfusionMode, PerfusionState } from "../types/perfusion";
 import type { GuideCatheterPlacement } from "../components/models/guideDeviceMesh";
-import type { GuideDeviceState } from "../types/guideDevice";
+import type { GuideAccessRoute, GuideDeviceState } from "../types/guideDevice";
 import { getMainTrunk, getVesselGraph } from "../components/models/vesselGraph";
 
 /**
@@ -32,6 +33,13 @@ export const DEFAULT_CAMERA_POSITION: [number, number, number] = [4, 2.5, 5];
 
 interface CardioStore {
   heart: HeartState;
+  /**
+   * 大動脈基部(バルサルバ洞)・上行大動脈の表示状態。心臓モデルには含まれていない
+   * ため、aorticRootMesh.tsが冠動脈入口部の位置から手続き的に生成した形状を表示する
+   * (AorticRootOverlay参照)。既定は非表示(ガイディングカテーテルのエンゲージ位置を
+   * 確認したいときに任意でONにする補助表示のため)。
+   */
+  aorticRoot: AorticRootState;
   /**
    * 血管(主幹単位、またはセグメント単位)の状態を id で引けるマップ。
    * segmentMode の切り替えで、この中身が主幹3本 <-> セグメント群に丸ごと
@@ -47,6 +55,7 @@ interface CardioStore {
   resetCameraSignal: number;
 
   setHeartDisplay: (patch: Partial<Omit<HeartState, "id" | "name">>) => void;
+  setAorticRootDisplay: (patch: Partial<Omit<AorticRootState, "id" | "name">>) => void;
   setVesselDisplay: (
     id: string,
     patch: Partial<Omit<VesselState, "id" | "name" | "parentVessel">>,
@@ -175,6 +184,8 @@ interface CardioStore {
   setGuideDeviceTargetBranch: (branchId: string) => void;
   setGuideDeviceInsertionPhase: (phase: number) => void;
   setGuideDevicePlaying: (playing: boolean) => void;
+  setGuideDeviceInsertionDuration: (seconds: number) => void;
+  setGuideDeviceAccessRoute: (route: GuideAccessRoute) => void;
   /**
    * カテーテル・ワイヤーの現在の配置(先端位置・向き等)。Phase 10のバックアップ力
    * 簡易評価が参照しやすいよう、GuideDeviceMeshes.tsx/CineAnatomyModel.tsxが
@@ -202,6 +213,9 @@ const TRUNK_VESSELS: Record<string, VesselState> = {
 
 const DEFAULT_HEART_COLOR = "#b5474d";
 const DEFAULT_HEART_OPACITY = 0.9;
+
+const DEFAULT_AORTIC_ROOT_COLOR = "#d98a8a";
+const DEFAULT_AORTIC_ROOT_OPACITY = 0.45;
 
 const initialClipping: ClippingState = {
   x: { enabled: false, position: 0 },
@@ -283,18 +297,30 @@ const initialPerfusion: PerfusionState = {
 };
 
 /** 既定はRCA本幹への挿入(RCA-mainという命名規則はscripts/extract_centerlines.py参照)。 */
+/** 以前は固定3秒だったが、体感が速すぎるとのフィードバックにより既定値を遅くした。GUIのスライダーで調整可能。 */
+const DEFAULT_INSERTION_DURATION_SECONDS = 10;
+
 const initialGuideDevice: GuideDeviceState = {
   enabled: false,
   showCatheter: true,
   showWire: true,
   targetVesselId: "RCA",
+  accessRoute: "radial",
   targetBranchId: "RCA-main",
   insertionPhase: 0,
   playing: false,
+  insertionDurationSeconds: DEFAULT_INSERTION_DURATION_SECONDS,
 };
 
 export const useCardioStore = create<CardioStore>((set) => ({
   heart: { id: "HEART", name: "Heart", visible: true, color: DEFAULT_HEART_COLOR, opacity: DEFAULT_HEART_OPACITY },
+  aorticRoot: {
+    id: "AORTIC_ROOT",
+    name: "大動脈基部 (バルサルバ洞・上行大動脈)",
+    visible: false,
+    color: DEFAULT_AORTIC_ROOT_COLOR,
+    opacity: DEFAULT_AORTIC_ROOT_OPACITY,
+  },
 
   vessels: TRUNK_VESSELS,
   segmentMode: false,
@@ -305,6 +331,9 @@ export const useCardioStore = create<CardioStore>((set) => ({
 
   setHeartDisplay: (patch) =>
     set((state) => ({ heart: { ...state.heart, ...patch } })),
+
+  setAorticRootDisplay: (patch) =>
+    set((state) => ({ aorticRoot: { ...state.aorticRoot, ...patch } })),
 
   setVesselDisplay: (id, patch) =>
     set((state) => ({
@@ -329,6 +358,7 @@ export const useCardioStore = create<CardioStore>((set) => ({
       }
       return {
         heart: { ...state.heart, color: DEFAULT_HEART_COLOR, opacity: DEFAULT_HEART_OPACITY },
+        aorticRoot: { ...state.aorticRoot, color: DEFAULT_AORTIC_ROOT_COLOR, opacity: DEFAULT_AORTIC_ROOT_OPACITY },
         vessels,
       };
     }),
@@ -532,6 +562,11 @@ export const useCardioStore = create<CardioStore>((set) => ({
     set((state) => ({ guideDevice: { ...state.guideDevice, insertionPhase: Math.max(0, Math.min(2, phase)) } })),
 
   setGuideDevicePlaying: (playing) => set((state) => ({ guideDevice: { ...state.guideDevice, playing } })),
+
+  setGuideDeviceInsertionDuration: (seconds) =>
+    set((state) => ({ guideDevice: { ...state.guideDevice, insertionDurationSeconds: Math.max(2, Math.min(30, seconds)) } })),
+
+  setGuideDeviceAccessRoute: (route) => set((state) => ({ guideDevice: { ...state.guideDevice, accessRoute: route } })),
 
   guideDevicePlacement: null,
   setGuideDevicePlacement: (placement) => set({ guideDevicePlacement: placement }),

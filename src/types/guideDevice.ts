@@ -4,6 +4,15 @@
 
 import type { VesselId } from "./anatomy";
 
+/**
+ * カテーテルの穿刺部位(アクセスルート)。心臓に到達するまでの体内経路の見た目
+ * (guideDeviceMesh.tsのFEMORAL_ENTRY_OFFSETS/RADIAL_ENTRY_OFFSETS)が変わる。
+ * 大動脈基部から冠動脈入口部へのエンゲージ手技自体はどちらのルートでも共通
+ * (両ルートとも最終的に上行大動脈を経て大動脈基部に到達するため)。
+ * 既定は橈骨(現在の主流のアプローチ)。
+ */
+export type GuideAccessRoute = "radial" | "femoral";
+
 export interface GuideDeviceState {
   /** 全体の表示/非表示。 */
   enabled: boolean;
@@ -11,6 +20,8 @@ export interface GuideDeviceState {
   showWire: boolean;
   /** どの血管の枝へ挿入するか。カテーテル先端形状はこのvesselIdがRCAかどうかで切り替わる(RCA以外はLCA系のJL/EBU風カーブ)。 */
   targetVesselId: VesselId;
+  /** カテーテルの穿刺部位(アクセスルート)。既定は橈骨。 */
+  accessRoute: GuideAccessRoute;
   /** targetVesselIdの血管グラフ内での、ワイヤーの到達目標にする枝ID(本幹または側枝)。 */
   targetBranchId: string;
   /**
@@ -20,4 +31,6 @@ export interface GuideDeviceState {
   insertionPhase: number;
   /** 「デバイスを挿入」再生中かどうか(GuideDeviceControls.tsxのrequestAnimationFrameループが進行度を更新する)。 */
   playing: boolean;
+  /** 挿入アニメーション全体(進行度0→2)の再生時間(秒)。GUIのスライダーで調整可能。 */
+  insertionDurationSeconds: number;
 }

@@ -3,6 +3,7 @@ import { MeshStandardMaterial } from "three";
 import type { Mesh, Vector3 } from "three";
 import type { VesselId } from "../../types/anatomy";
 import { useCardioStore } from "../../store/useCardioStore";
+import { computeAorticRootFrame } from "./aorticRootMesh";
 import { getMainTrunk } from "./vesselGraph";
 import type { VesselGraph } from "./vesselGraph";
 import {
@@ -36,7 +37,19 @@ export function GuideDeviceMeshes({ heartMesh, heartCentroid, graphs }: GuideDev
 
   const heartScale = useMemo(() => computeHeartScale(heartMesh), [heartMesh]);
   const graph = graphs.get(guideDevice.targetVesselId);
-  const catheterPath = useGuideCatheterPath(graph, heartCentroid, heartScale, guideDevice.targetVesselId);
+  // 冠動脈入口部の実位置から逆算した大動脈基部フレーム(aorticRootMesh.ts)。
+  // カテーテルが対側壁に当ててからエンゲージする経路(computeGuideCatheterPath参照)の
+  // 基準に使う。
+  const aorticRootFrame = useMemo(() => computeAorticRootFrame(heartCentroid, graphs), [heartCentroid, graphs]);
+  const catheterPath = useGuideCatheterPath(
+    graph,
+    heartCentroid,
+    heartScale,
+    guideDevice.targetVesselId,
+    guideDevice.accessRoute,
+    aorticRootFrame,
+    heartMesh ?? null,
+  );
 
   useEffect(() => {
     setGuideDevicePlacement(catheterPath?.placement ?? null);

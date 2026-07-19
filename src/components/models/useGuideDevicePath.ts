@@ -2,6 +2,8 @@ import { useMemo } from "react";
 import { Box3, Vector3 } from "three";
 import type { Mesh } from "three";
 import type { VesselId } from "../../types/anatomy";
+import type { GuideAccessRoute } from "../../types/guideDevice";
+import type { AorticRootFrame } from "./aorticRootMesh";
 import {
   buildGuideCatheterGeometry,
   buildGuideWireGeometry,
@@ -24,8 +26,14 @@ export function computeHeartScale(heartMesh: Mesh | undefined): number {
 
 /** ガイディングカテーテルの半径を、対象血管のオスティウム半径に対してどの比率にするか(血管と同程度〜やや太い、という仕様)。 */
 export const CATHETER_RADIUS_RATIO = 1.0;
-/** ガイドワイヤーの半径を、対象血管のオスティウム半径に対してどの比率にするか(実物の0.014インチは血管よりずっと細いため、小さい比率にする)。 */
-export const WIRE_RADIUS_RATIO = 0.05;
+/**
+ * ガイドワイヤーの半径を、対象血管のオスティウム半径に対してどの比率にするか。実物の
+ * 0.014インチ(約0.36mm)は血管よりずっと細いが、比率で言えば主要冠動脈(直径3〜4mm程度)に
+ * 対して約12〜15%であり、以前の0.05(5%)は細すぎてシネX線上での存在感(視認性・
+ * コントラスト)が実物より薄くなっていた。実物相応の比率に上げて、くっきりした
+ * 一本の線として見えるようにする。
+ */
+export const WIRE_RADIUS_RATIO = 0.13;
 
 /**
  * カテーテルの経路(スプライン+Phase 10向け配置情報)をメモ化するフック。
@@ -36,12 +44,23 @@ export function useGuideCatheterPath(
   heartCentroid: Vector3,
   heartScale: number,
   vesselId: VesselId,
+  accessRoute: GuideAccessRoute,
+  aorticRootFrame: AorticRootFrame | null,
+  heartMesh: Mesh | null,
 ): GuideCatheterPath | null {
   return useMemo(() => {
     if (!graph) return null;
-    return computeGuideCatheterPath(graph, heartCentroid, heartScale, vesselId);
+    return computeGuideCatheterPath(
+      graph,
+      heartCentroid,
+      heartScale,
+      vesselId,
+      accessRoute,
+      aorticRootFrame,
+      heartMesh,
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, heartCentroid, heartScale, vesselId]);
+  }, [graph, heartCentroid, heartScale, vesselId, accessRoute, aorticRootFrame, heartMesh]);
 }
 
 /** カテーテルの進行度に応じた表示用ジオメトリをメモ化するフック。 */

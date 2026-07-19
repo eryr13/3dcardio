@@ -1,14 +1,16 @@
 import { useEffect, useMemo } from "react";
 import { useCardioStore } from "../../store/useCardioStore";
 import type { VesselId } from "../../types/anatomy";
+import type { GuideAccessRoute } from "../../types/guideDevice";
 import { getVesselGraph } from "../models/vesselGraph";
 import { CollapsibleSection } from "./CollapsibleSection";
 
 const VESSEL_IDS: VesselId[] = ["RCA", "LAD", "LCX"];
 const VESSEL_LABELS: Record<VesselId, string> = { RCA: "RCA", LAD: "LAD", LCX: "LCX" };
-
-/** 挿入アニメーション全体(進行度0→2)の再生時間(秒)。物理的な正確さは目的にしないデモ用の固定値。 */
-const INSERTION_ANIMATION_DURATION_SECONDS = 3;
+const ACCESS_ROUTE_LABELS: Record<GuideAccessRoute, string> = {
+  radial: "橈骨アプローチ(手首・標準的)",
+  femoral: "大腿アプローチ(鼠径部)",
+};
 
 function phaseLabel(phase: number): string {
   if (phase <= 0) return "未挿入";
@@ -37,6 +39,8 @@ export function GuideDeviceControls() {
   const setGuideDeviceTargetBranch = useCardioStore((s) => s.setGuideDeviceTargetBranch);
   const setGuideDeviceInsertionPhase = useCardioStore((s) => s.setGuideDeviceInsertionPhase);
   const setGuideDevicePlaying = useCardioStore((s) => s.setGuideDevicePlaying);
+  const setGuideDeviceInsertionDuration = useCardioStore((s) => s.setGuideDeviceInsertionDuration);
+  const setGuideDeviceAccessRoute = useCardioStore((s) => s.setGuideDeviceAccessRoute);
 
   const graph = useMemo(() => getVesselGraph(guideDevice.targetVesselId), [guideDevice.targetVesselId]);
 
@@ -47,8 +51,8 @@ export function GuideDeviceControls() {
     const step = (now: number) => {
       const dt = (now - lastTime) / 1000;
       lastTime = now;
-      const current = useCardioStore.getState().guideDevice.insertionPhase;
-      const next = current + (2 / INSERTION_ANIMATION_DURATION_SECONDS) * dt;
+      const state = useCardioStore.getState().guideDevice;
+      const next = state.insertionPhase + (2 / state.insertionDurationSeconds) * dt;
       if (next >= 2) {
         setGuideDeviceInsertionPhase(2);
         setGuideDevicePlaying(false);
@@ -87,6 +91,20 @@ export function GuideDeviceControls() {
 
       {guideDevice.enabled && (
         <>
+          <label className="object-form-row">
+            アクセスルート
+            <select
+              value={guideDevice.accessRoute}
+              onChange={(e) => setGuideDeviceAccessRoute(e.target.value as GuideAccessRoute)}
+            >
+              {(Object.keys(ACCESS_ROUTE_LABELS) as GuideAccessRoute[]).map((route) => (
+                <option key={route} value={route}>
+                  {ACCESS_ROUTE_LABELS[route]}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <label className="object-form-row">
             対象血管
             <select
@@ -129,6 +147,21 @@ export function GuideDeviceControls() {
               リセット
             </button>
           </div>
+
+          <label className="cine-xray-slider">
+            <span>
+              挿入にかける時間
+              <span className="cine-xray-slider-value">{guideDevice.insertionDurationSeconds.toFixed(0)}秒</span>
+            </span>
+            <input
+              type="range"
+              min={3}
+              max={30}
+              step={1}
+              value={guideDevice.insertionDurationSeconds}
+              onChange={(e) => setGuideDeviceInsertionDuration(Number(e.target.value))}
+            />
+          </label>
 
           <label className="cine-xray-slider">
             <span>

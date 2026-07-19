@@ -4,6 +4,7 @@ import { BackSide, Box3, Mesh, MeshBasicMaterial, MultiplyBlending, NormalBlendi
 import { useCardioStore } from "../../store/useCardioStore";
 import type { VesselId, VesselState } from "../../types/anatomy";
 import type { CalcificationObject, StenosisObject, StentObject } from "../../types/object";
+import { computeAorticRootFrame } from "./aorticRootMesh";
 import { ContrastFillTube, ContrastMaskTube } from "./ContrastFillTube";
 import { HeartbeatGroup } from "./HeartbeatGroup";
 import { useCalcificationGeometry, useStenosisPlaqueGeometry, useStentGeometry, useStentLatticeGeometry } from "./ObjectMeshes";
@@ -175,7 +176,22 @@ export function CineAnatomyModel() {
   // storeへの書き戻しはメインビュー側だけが行う(シネビューは読み取り専用の描画のみ)。
   const heartScale = useMemo(() => computeHeartScale(built.meshesByName.get("HEART")), [built]);
   const guideGraph = built.graphs.get(guideDevice.targetVesselId);
-  const catheterPath = useGuideCatheterPath(guideGraph, heartCentroid, heartScale, guideDevice.targetVesselId);
+  // 冠動脈入口部の実位置から逆算した大動脈基部フレーム(aorticRootMesh.ts)。
+  // カテーテルが対側壁に当ててからエンゲージする経路(computeGuideCatheterPath参照)の
+  // 基準に使う。
+  const guideAorticRootFrame = useMemo(
+    () => computeAorticRootFrame(heartCentroid, built.graphs),
+    [heartCentroid, built],
+  );
+  const catheterPath = useGuideCatheterPath(
+    guideGraph,
+    heartCentroid,
+    heartScale,
+    guideDevice.targetVesselId,
+    guideDevice.accessRoute,
+    guideAorticRootFrame,
+    built.meshesByName.get("HEART") ?? null,
+  );
   const guideOstiumRadius = guideGraph ? getMainTrunk(guideGraph).points[0]?.radius ?? 0.03 : 0.03;
   const catheterRadius = guideOstiumRadius * CATHETER_RADIUS_RATIO;
   const wireRadius = guideOstiumRadius * WIRE_RADIUS_RATIO;
@@ -183,7 +199,10 @@ export function CineAnatomyModel() {
   const wireProgress = Math.max(0, guideDevice.insertionPhase - 1);
   const catheterGeometry = useGuideCatheterGeometry(catheterPath, catheterRadius, catheterProgress);
   const wireGeometry = useGuideWireGeometry(guideGraph, guideDevice.targetBranchId, wireRadius, wireProgress);
-  const guideDeviceMaterial = useMemo(() => createObjectSilhouetteMaterial("#b8bcc2"), []);
+  const guideCatheterSilhouetteMaterial = useMemo(() => createObjectSilhouetteMaterial("#b8bcc2"), []);
+  // ワイヤーはカテーテルより細い金属線で、実際の透視でもカテーテルの塗りつぶし本体より
+  // くっきり暗い一本の線として見えるため、スキーマ表示でも同じ色を共有せず別マテリアルにする。
+  const guideWireSilhouetteMaterial = useMemo(() => createObjectSilhouetteMaterial("#5b5f66"), []);
 
   useEffect(() => {
     const vesselMeshes: Partial<Record<VesselId, Mesh>> = {};
@@ -420,7 +439,7 @@ export function CineAnatomyModel() {
               既定の空ジオメトリが登録されてしまうため。 */}
           {guideDevice.showCatheter && catheterGeometry && (
             <>
-              <mesh geometry={catheterGeometry} material={guideDeviceMaterial} visible={!xrayMode} />
+              <mesh geometry={catheterGeometry} material={guideCatheterSilhouetteMaterial} visible={!xrayMode} />
               <mesh
                 geometry={catheterGeometry}
                 visible={false}
@@ -430,7 +449,7 @@ export function CineAnatomyModel() {
           )}
           {guideDevice.showWire && wireGeometry && (
             <>
-              <mesh geometry={wireGeometry} material={guideDeviceMaterial} visible={!xrayMode} />
+              <mesh geometry={wireGeometry} material={guideWireSilhouetteMaterial} visible={!xrayMode} />
               <mesh
                 geometry={wireGeometry}
                 visible={false}

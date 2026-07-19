@@ -35,6 +35,17 @@ export interface HeartState extends AnatomyDisplayState {
   name: string;
 }
 
+/**
+ * 大動脈基部(バルサルバ洞)・上行大動脈の表示状態。心臓モデル(ImageCAS由来)には
+ * このメッシュが含まれていないため、冠動脈入口部(オスティウム)の位置から
+ * 手続き的に生成する(aorticRootMesh.ts参照)。ガイディングカテーテルがどこから
+ * どう冠動脈入口部にエンゲージしているかを視覚的に理解しやすくするための補助表示。
+ */
+export interface AorticRootState extends AnatomyDisplayState {
+  id: "AORTIC_ROOT";
+  name: string;
+}
+
 /** モデルの供給元。今回は placeholder のみ実装し、将来 gltf を追加する */
 export type ModelSource =
   | { type: "placeholder" }

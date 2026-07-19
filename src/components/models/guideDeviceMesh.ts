@@ -12,9 +12,18 @@
 // 目的ではない)。
 
 import { CatmullRomCurve3, Vector3 } from "three";
-import type { BufferGeometry } from "three";
+import type { BufferGeometry, Mesh } from "three";
+import { ConvexHull } from "three/addons/math/ConvexHull.js";
 import type { VesselId } from "../../types/anatomy";
+import type { GuideAccessRoute } from "../../types/guideDevice";
 import { buildBranchLinks } from "../../utils/contrastFlow";
+import {
+  distanceFromAxis,
+  evaluateAorticRootRadius,
+  pointAtRelativeHeight,
+  projectOntoFrame,
+} from "./aorticRootMesh";
+import type { AorticRootFrame } from "./aorticRootMesh";
 import { buildTubeFromPoints } from "./stentLatticeMesh";
 import { sampleCenterline } from "./vesselCenterline";
 import { getBranch, getMainTrunk } from "./vesselGraph";
@@ -106,71 +115,425 @@ function shapeForVessel(vesselId: VesselId): CoronaryApproachShape {
 }
 
 /**
- * カテーテルの制御点オフセット(オスティウムを基準にした[頭側, 心臓中心から見て外向き,
- * 側方]の3成分、心臓のスケールに対する比率)。並びは体外側(P0、大動脈からの
- * アプローチ)→オスティウムの手前で一度くぐらせるループ(P2〜P4)→係合直前(P5)で、
- * 最後にオスティウム自身(P6、常に[0,0,0]相当)を追加してスプラインを作る。
+ * アクセスルート別の、体外側〜上行大動脈手前までの経路オフセット(オスティウムを
+ * 基準にした[頭側, 心臓中心から見て外向き, 側方]、entryLateral軸で解釈される——
+ * どちらの冠動脈を狙うかに関わらず穿刺部位は体に対して一定の側なので、狙う血管
+ * ごとに向きが変わる側方軸とは別の固定軸を使う)。いずれも心臓から十分離れた
+ * (heartScaleの1.5倍以上の)領域にとどまるため、心筋を貫通する心配はない。
  *
- * 実際のカテーテル手技を大まかに模したもの: カテーテル先端はオスティウムの高さを
- * 一度通り過ぎて(P2)大動脈洞の奥まで進み、側方(lateral)へ大きくカーブしながら
- * オスティウムより下(-up)まで潜り込み(P3、ループの頂点)、そこから向きを変えて
- * 側方成分を0へ戻しながら(P4→P5)、オスティウムの真下から上向きにフックして
- * 係合する(P5→P6=オスティウムの区間で、up成分だけが単調に増える)。
- *
- * ループの往路(P2〜P3)と復路(P4〜P5)は、同じ高さ(up)付近でもlateral成分が
- * 大きく離れている(RCAで往復差0.2程度、LCAで0.4〜0.6程度、いずれもカテーテル
- * 半径の10倍以上)ため、チューブ化しても自己交差しない。またP5→P6の区間以外では
- * 側方・外向きのどちらかの成分が常にオスティウムから離れているため、最終区間より
- * 手前でスプラインがオスティウム付近を再度かすめることもない。
- *
- * RCA(JR風): 側方への振れが小さい、比較的コンパクトなフック。
- * LCA(JL/EBU風): 側方への振れが大きい、対側の大動脈壁に沿うような大きめの
- * 二次カーブ。どちらも実在のカテーテル形状の厳密な再現ではなく、大まかな
- * 向き・カーブの違いを表現するためのものである。
+ * 大腿アプローチ: 鼠径部(大腿動脈)は心臓よりずっと下にあり、腸骨動脈・腹部大動脈・
+ * 下行大動脈を通って大動脈弓を越えるまで、経路の大半が心臓より低い位置にある。
+ * 橈骨アプローチ: 手首から上腕動脈・腋窩動脈・鎖骨下動脈・腕頭動脈を経て弓部へ
+ * 到達するため、経路は常に心臓より高い位置にある。
  */
-const RCA_CATHETER_OFFSETS: readonly [number, number, number][] = [
-  [3.4, 1.2, 0.0],
-  [1.9, 0.65, 0.05],
-  [0.55, 0.1, 0.18],
-  [-0.35, -0.12, 0.22],
-  [-0.55, 0.05, 0.12],
-  [-0.4, 0.0, 0.0],
+const FEMORAL_ENTRY_OFFSETS: readonly [number, number, number][] = [
+  [-4.5, 0.4, -0.3],
+  [-1.0, 1.0, -0.4],
 ];
+const RADIAL_ENTRY_OFFSETS: readonly [number, number, number][] = [[4.6, 1.7, 1.6]];
 
-const LCA_CATHETER_OFFSETS: readonly [number, number, number][] = [
-  [3.6, 1.4, 0.1],
-  [2.1, 0.85, 0.3],
-  [0.8, 0.25, 0.6],
-  [-0.15, -0.1, 0.75],
-  [-0.55, 0.1, 0.35],
-  [-0.45, 0.0, 0.0],
-];
+/**
+ * カテーテル先端がオスティウムへ係合する深さ(heartScaleに対する比率)。ガイディング
+ * カテーテルは入口部にエンゲージするのみで冠動脈の奥へは入り込まないため、ごく浅い
+ * 値にする(冠動脈の中へ進むのはガイドワイヤーの役目)。
+ */
+const TIP_ENGAGEMENT_DEPTH_FRACTION = 0.02;
+/**
+ * 「し」の字(J字)エンゲージ経路の制御点(いずれも大動脈基部フレームの局所半径に
+ * 対する到達率・AORTIC_ROOT_PROFILEのup相対値で定義し、内腔からはみ出さないことを
+ * 構築時点で保証する)。実際のJudkinsカテーテルの手技を模す:
+ *   1. TOP: 上行大動脈側から円筒に入る点(軸付近)
+ *   2. MID_DESCENT: 洞管接合部あたりの高さで、対側壁方向へ寄りながら下降する点
+ *   3. FLOOR: 円筒下端付近(大動脈弁のすぐ上、弁輪の高さ)まで落とし込む「底」の点。
+ *      対側壁に深く当たり、支点(バックアップ)になる——LCA(JL/EBU型)はRCA(JR型)より
+ *      深く落とし込む(ユーザー要件:「LCAはRCAより深い、対側壁をしっかり使うカーブ」)
+ *   4. HOOK: 底からやや上がり、角度も対側壁側から対象冠動脈入口部側へ回転した点。
+ *      底で反転し下から持ち上がる「し」の字のカーブをここで作る
+ * HOOKの角度は、frame.rcaAngle/leftAngle(RCA/LAD+LCXの平均)ではなく、対象冠動脈
+ * 自身の実際の入口部方向(ownAngle、buildCatheterApproach内で個別に算出)へ寄せる
+ * ——LADとLCXは実際には別の角度にあるため、平均値ではなく個別の実データを使う。
+ */
+const LUMEN_TOP_UP_RELATIVE = 2.9;
+const LUMEN_TOP_RADIUS_FRACTION = 0.15;
+const MID_DESCENT_UP_RELATIVE = 0.7;
+const MID_DESCENT_RADIUS_FRACTION = 0.5;
+/** 底の高さ(up相対値)。LCAはRCAより深く(弁輪に近く)落とし込む。 */
+const RCA_FLOOR_UP_RELATIVE = -0.3;
+const LCA_FLOOR_UP_RELATIVE = -0.5;
+/** 底での対側壁への到達率。LCAはRCAより深く壁に当てる。 */
+const RCA_FLOOR_WALL_FRACTION = 0.7;
+const LCA_FLOOR_WALL_FRACTION = 0.95;
+/** 反転点(フック)の高さ(底から入口部の高さ=0までの間の、底からの距離の割合)。 */
+const HOOK_UP_RELATIVE_FRACTION = 0.55;
+/** 反転点の角度(対側壁の角度から対象入口部自身の角度へ、この割合だけ回転させる)。 */
+const HOOK_ANGLE_BLEND = 0.65;
+const HOOK_RADIUS_FRACTION = 0.4;
+/**
+ * TOP/MID_DESCENT/FLOOR(底)の角度も、対側壁の角度(frame.rcaAngle/leftAngle、
+ * RCA目標かLCA目標かの2択でしか変わらない)から対象冠動脈自身の角度(ownAngle)へ、
+ * この割合だけ回転させる。LAD/LCXはどちらもshape="LCA"のため、この寄せが無いと
+ * TOP/MID_DESCENT/FLOORが完全に同一の点になり、対象血管を切り替えても経路の
+ * 大部分が区別できなくなる(HOOKだけでは差が小さすぎる——LAD/LCXのownAngleの差は
+ * 数度程度で、HOOK_ANGLE_BLEND(0.65)をかけてもなお視覚的にほぼ同じに見える)。
+ * HOOK_ANGLE_BLENDより小さくして、「対側壁にしっかり当ててから反転する」という
+ * J字カーブの基本形は保つ。
+ */
+const MAIN_LOOP_ANGLE_BLEND = 0.25;
+/**
+ * 大動脈基部フレームが得られない場合(未ロード等)の底点フォールバック
+ * (heartScaleに対する比率、up/outward成分。側方成分無しの簡易版)。
+ */
+const FALLBACK_BULGE_UP_FRACTION = 0.15;
+const FALLBACK_BULGE_OUTWARD_FRACTION = 0.45;
+/** 上行大動脈点のオフセット(heartScaleに対する比率)。内腔を出た後、さらに頭側・外向きへ進み、心臓から明確に離れる。 */
+const AORTA_UP_FRACTION = 1.4;
+const AORTA_OUTWARD_FRACTION = 0.6;
+/**
+ * 大動脈基部の内腔からはみ出さないことを検証・補正する対象とする高さの範囲
+ * (AORTIC_ROOT_PROFILEのup相対値。この範囲外の点(体外側の経路など)は対象外)。
+ * 下限はLCA_FLOOR_UP_RELATIVE(-0.5)より十分下まで確保し、底点付近でCatmullRomが
+ * 予測しにくく膨らんでも(=底より下に突き抜けても)検証・補正の対象に含める。
+ */
+const AORTIC_CONTAINMENT_UP_RELATIVE_MIN = -0.9;
+const AORTIC_CONTAINMENT_UP_RELATIVE_MAX = 3.2;
+/** 補正後に局所半径の何%以内に収めるか(ぴったり境界に置くと数値誤差で再びはみ出しかねないため、わずかに余裕を持たせる)。 */
+const AORTIC_CONTAINMENT_SAFETY_MARGIN = 0.95;
 
-function buildCatheterControlPoints(
+/** 干渉補正1回あたりに点を押し出す距離(heartScaleに対する比率)。 */
+const CORRECTION_STEP_FRACTION = 0.03;
+/** 干渉補正の最大反復回数(通常は数回〜十数回で収束する。実測ではRCA/LAD/LCXいずれも10回未満)。 */
+const CORRECTION_MAX_ITERATIONS = 60;
+/**
+ * オスティウムからこの距離(TIP_ENGAGEMENT_DEPTH_FRACTIONの倍数)未満の点は干渉補正の
+ * 対象から除外する。オスティウム自身は定義上心筋表面に接しているため、この近傍の点を
+ * 無理に押し出すと「先端が入口部にエンゲージしている」という前提が崩れてしまう。
+ */
+const TIP_CORRECTION_GUARD_MULTIPLIER = 1.5;
+
+/** 心臓メッシュ(Mesh)ごとに計算済みの凸包を再利用するキャッシュ。凸包の計算はメッシュの
+ * 全頂点を使うため軽くないが、対象血管やアクセスルートを切り替えるたびに毎回計算し直す
+ * 必要はなく、同じMeshインスタンスに対しては一度計算すれば十分なため。 */
+const heartConvexHullCache = new WeakMap<Mesh, ConvexHull>();
+
+function getHeartConvexHull(mesh: Mesh): ConvexHull {
+  const cached = heartConvexHullCache.get(mesh);
+  if (cached) return cached;
+  const hull = new ConvexHull().setFromObject(mesh);
+  heartConvexHullCache.set(mesh, hull);
+  return hull;
+}
+
+/**
+ * pointが心筋メッシュの内側にあるかどうかを判定する。心筋メッシュ自体(凹形状)に対して
+ * 毎回レイキャストするのは低速すぎる(実測: 約5万三角形のメッシュに対し数千回のレイ
+ * キャストで数十秒かかった)ため、代わりにメッシュの凸包(ConvexHull、一度だけ計算して
+ * 再利用)で判定する。凸包は実メッシュを内包する(実メッシュ⊆凸包)ので、「凸包の外側」
+ * は必ず「実メッシュの外側」でもある——安全側に倒れた判定になる(凹んだ領域では実際より
+ * やや過剰に「内側」と判定されうるが、それは経路を心臓からわずかに余分に離す方向にしか
+ * 働かないため、貫通を見逃すことはない)。
+ *
+ * さらに、メッシュ全体はその境界球(中心heartCentroid、半径heartScale)に必ず収まるため、
+ * 境界球の外側にある点は凸包の判定を待たずに「確実に外側」と即断できる(安価な事前
+ * チェック)。体外側の制御点はほぼ全てこの事前チェックだけで済むため、実際に凸包の
+ * containsPointを呼ぶのはオスティウム近傍の少数の点に限られる。
+ */
+function isInsideHeartMesh(hull: ConvexHull, heartCentroid: Vector3, heartScale: number, point: Vector3): boolean {
+  if (point.distanceTo(heartCentroid) > heartScale) return false;
+  return hull.containsPoint(point);
+}
+
+/**
+ * pointが心筋メッシュの内側にある場合、referenceCenter(心臓の重心)から見て外向きの
+ * 方向へ少しずつ押し出し、外側に出るまで繰り返す。ユーザー要件「経路上の各点について
+ * 心臓メッシュとの干渉がないことを検証し、貫通しそうな場合は制御点を心臓の外側へ移動
+ * させて回避する」をそのまま実装したもの。
+ */
+function moveOutsideHeartMesh(hull: ConvexHull, heartCentroid: Vector3, heartScale: number, point: Vector3): Vector3 {
+  const corrected = point.clone();
+  for (let i = 0; i < CORRECTION_MAX_ITERATIONS; i++) {
+    if (!isInsideHeartMesh(hull, heartCentroid, heartScale, corrected)) break;
+    const direction = corrected.clone().sub(heartCentroid);
+    if (direction.lengthSq() < 1e-10) direction.set(0, 1, 0);
+    direction.normalize();
+    corrected.addScaledVector(direction, heartScale * CORRECTION_STEP_FRACTION);
+  }
+  return corrected;
+}
+
+/** 角度bからaへの最短の符号付き差(ラジアン、-π〜π)。フック点の角度を対側壁側から
+ * 対象入口部側へ回転させる際、常に短い方の弧をたどるようにするために使う。 */
+function angularDiff(a: number, b: number): number {
+  let d = (a - b) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+/**
+ * pointが大動脈基部フレームの内腔(ensurePathStaysInsideAorticRootが保証する高さ範囲・
+ * 局所半径以内)に収まっているかどうか。心筋メッシュ(心臓モデルには大動脈の内腔が
+ * 別メッシュとして分離されていない)は、この領域を「心筋の内部」と誤判定しうる——
+ * 実際には大動脈の内腔であり心筋そのものではないため、この領域内の点は心筋干渉の
+ * 補正対象から除外する(ensurePathClearsHeartMesh参照)。
+ */
+function isWithinAorticRootLumen(frame: AorticRootFrame, point: Vector3): boolean {
+  const { upRelative } = projectOntoFrame(frame, point);
+  if (upRelative < AORTIC_CONTAINMENT_UP_RELATIVE_MIN || upRelative > AORTIC_CONTAINMENT_UP_RELATIVE_MAX) return false;
+  return distanceFromAxis(frame, point) <= evaluateAorticRootRadius(frame, point) * AORTIC_CONTAINMENT_SAFETY_MARGIN;
+}
+
+/**
+ * 密な点列の各点(オスティウム直近の短いスタブを除く)について心筋メッシュとの干渉を
+ * 検証し、内側と判定された点を外側へ押し出す。オスティウム自身とその直近のスタブは、
+ * 定義上心筋表面に接しているため対象外にする(押し出すと先端のエンゲージが崩れる)。
+ * 大動脈基部フレームの内腔に収まっている点(isWithinAorticRootLumen)も対象外にする
+ * ——心筋メッシュには大動脈の内腔が別メッシュとして分離されておらず、実測では
+ * この内腔領域の大部分がそもそも心筋メッシュの「内部」(=空洞のない実質組織)である
+ * ことを確認している(内腔の中心軸付近まで押し出しても心筋メッシュの内部と判定される
+ * ——つまりこの領域には経路点を移動して逃がせる「外」が存在しない)。この領域の
+ * 貫通の見た目は、経路点の補正では原理的に解消できず、AorticRootOverlay側の表示
+ * (心筋メッシュを大動脈基部フレームの形状でクリッピングする、buildAorticRootGeometry
+ * 参照)で対処する。
+ */
+function ensurePathClearsHeartMesh(
+  points: Vector3[],
   ostiumPosition: Vector3,
+  heartMesh: Mesh,
+  heartCentroid: Vector3,
+  heartScale: number,
+  tipGuardDistance: number,
+  aorticRootFrame: AorticRootFrame | null,
+): Vector3[] {
+  const hull = getHeartConvexHull(heartMesh);
+  return points.map((point) => {
+    if (point.distanceTo(ostiumPosition) < tipGuardDistance) return point.clone();
+    if (aorticRootFrame && isWithinAorticRootLumen(aorticRootFrame, point)) return point.clone();
+    if (!isInsideHeartMesh(hull, heartCentroid, heartScale, point)) return point.clone();
+    return moveOutsideHeartMesh(hull, heartCentroid, heartScale, point);
+  });
+}
+
+function polylineLength(points: Vector3[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += points[i - 1].distanceTo(points[i]);
+  return total;
+}
+
+/**
+ * pointの大動脈基部フレームからの水平距離(distanceFromAxis)が、その高さ・角度に
+ * おける可視化形状の局所半径(evaluateAorticRootRadius、AORTIC_CONTAINMENT_SAFETY_MARGIN
+ * を掛けたもの)を超えている場合、頭側方向の成分は保ったまま水平成分だけを縮めて
+ * 内腔に収める。ユーザー要件「経路上の各点が大動脈基部の内腔に収まっていることを
+ * 検証し、はみ出す点があれば内腔に収まるよう制御点を調整する」をそのまま実装したもの。
+ */
+function moveInsideAorticRoot(frame: AorticRootFrame, point: Vector3): Vector3 {
+  const offset = point.clone().sub(frame.center);
+  const alongAxis = frame.axis.clone().multiplyScalar(frame.axis.dot(offset));
+  const horizontal = offset.clone().sub(alongAxis);
+  const axisDistance = horizontal.length();
+  const localBound = evaluateAorticRootRadius(frame, point) * AORTIC_CONTAINMENT_SAFETY_MARGIN;
+  if (axisDistance <= localBound || axisDistance < 1e-10) return point.clone();
+  horizontal.multiplyScalar(localBound / axisDistance);
+  return frame.center.clone().add(alongAxis).add(horizontal);
+}
+
+/**
+ * 密な点列の各点(オスティウム直近の短いスタブを除く)のうち、大動脈基部の可視化形状の
+ * 高さ範囲(AORTIC_CONTAINMENT_UP_RELATIVE_MIN〜MAX、体外側の経路などその範囲外の点は
+ * 対象外)にあるものについて、内腔からはみ出していないかを検証し、はみ出す点は
+ * moveInsideAorticRootで軸寄りに補正する。検証結果(最大到達率)をログに報告する。
+ */
+function ensurePathStaysInsideAorticRoot(
+  points: Vector3[],
+  ostiumPosition: Vector3,
+  frame: AorticRootFrame,
+  tipGuardDistance: number,
+  shape: CoronaryApproachShape,
+): Vector3[] {
+  let worstRatio = 0;
+  const corrected = points.map((point) => {
+    if (point.distanceTo(ostiumPosition) < tipGuardDistance) return point.clone();
+    const { upRelative } = projectOntoFrame(frame, point);
+    if (upRelative < AORTIC_CONTAINMENT_UP_RELATIVE_MIN || upRelative > AORTIC_CONTAINMENT_UP_RELATIVE_MAX) {
+      return point.clone();
+    }
+    const rawBound = evaluateAorticRootRadius(frame, point);
+    const axisDistance = distanceFromAxis(frame, point);
+    worstRatio = Math.max(worstRatio, axisDistance / rawBound);
+    // isWithinAorticRootLumen(呼び出し側のensurePathClearsHeartMesh)が「内腔内なので
+    // 心筋干渉補正の対象外」と判定するのと同じ、余裕を持たせた基準(rawBound*
+    // AORTIC_CONTAINMENT_SAFETY_MARGIN)で「収まっている」を判定する。ここをrawBoundの
+    // 100%までを許容範囲にしてしまうと、95%〜100%の間の点が「収まっている」と
+    // 判定されつつ心筋干渉補正の対象外の基準(95%以内)は満たさないという不整合が生じ、
+    // 後段の心筋干渉補正がその点を大動脈基部の外側へ押し出してしまいかねない。
+    if (axisDistance <= rawBound * AORTIC_CONTAINMENT_SAFETY_MARGIN) return point.clone();
+    return moveInsideAorticRoot(frame, point);
+  });
+  console.log(
+    `[guideDeviceMesh] 大動脈基部内腔の検証(${shape}): 経路上の最大到達率=` +
+      `${(worstRatio * 100).toFixed(1)}%(100%以内なら内腔に収まっている)`,
+  );
+  return corrected;
+}
+
+interface CatheterApproach {
+  /** 体外側→オスティウムの順の、意味のある制御点(Phase 10向け指標や回帰テストで使う)。 */
+  controlPoints: Vector3[];
+  /** 実際に描画する密な点列(体外側→オスティウムの順、弧長に沿った均等間隔ではない)。 */
+  densePoints: Vector3[];
+}
+
+/**
+ * 冠動脈入口部(オスティウム)エンゲージ区間の制御点を、解剖学的な基準点として構築し、
+ * 経路全体を実際の心臓メッシュとの干渉について検証・補正する。
+ *
+ * 基準点(体外→オスティウムの順):
+ *   1. 体外への出口点(アクセスルート別、FEMORAL/RADIAL_ENTRY_OFFSETS)
+ *   2. 上行大動脈点: オスティウムから頭側・外向きへheartScaleオーダーで離れた点
+ *   3. 大動脈基部・対側壁バルジ点: 先端の手前で対側壁に一度当たってからオスティウムへ
+ *      向かう、というJudkinsカテーテルの特徴的な挙動(バックアップ)を表す。大動脈基部
+ *      フレーム(aorticRootMesh.ts、冠動脈入口部の実位置から逆算した実際の円筒)が
+ *      得られる場合は、対象と反対側の冠動脈入口部の角度方向にある円筒内壁上の点を使う。
+ *      RCA(JR型)は浅め、LCA(JL/EBU型)はより深く対側壁を使う
+ *   4. 先端スタブ: オスティウム - ostiumDirection×深さ。tipDirectionが厳密に
+ *      ostiumDirectionと一致する(「先端が入口部の起始方向に沿って嵌まり込む」要件)
+ *   5. オスティウム(先端)
+ *
+ * これら全点を1本のCatmullRomスプラインで結び、密にサンプリングした上で、
+ * ensurePathClearsHeartMesh により経路上の全点(オスティウム直近の短いスタブを除く)が
+ * 心筋メッシュの外側にあることを検証し、内側と判定された点は心臓の重心から見て外向きへ
+ * 押し出して補正する。パラメトリックな構築だけでは(特にCatmullRomが制御点間で予測し
+ * にくく膨らむ性質上)貫通を防ぎきれないことが実測で分かったため、この検証・補正を
+ * 経路全体に対する最終的な安全網として必ず適用する。
+ */
+function buildCatheterApproach(
+  ostiumPosition: Vector3,
+  ostiumDirection: Vector3,
   heartCentroid: Vector3,
   heartScale: number,
   shape: CoronaryApproachShape,
-): Vector3[] {
+  accessRoute: GuideAccessRoute,
+  aorticRootFrame: AorticRootFrame | null,
+  heartMesh: Mesh | null,
+): CatheterApproach {
+  const up = new Vector3(0, 1, 0);
   const outward = ostiumPosition.clone().sub(heartCentroid);
   if (outward.lengthSq() < 1e-8) outward.set(1, 0, 0);
   outward.normalize();
 
-  const up = new Vector3(0, 1, 0);
-  const lateral = new Vector3().crossVectors(up, outward);
-  if (lateral.lengthSq() < 1e-8) lateral.set(1, 0, 0);
-  lateral.normalize();
+  // 先端スタブ。tipDirection = normalize(ostium - tipAlignmentPoint) が厳密に
+  // ostiumDirectionと一致する。
+  const depth = TIP_ENGAGEMENT_DEPTH_FRACTION * heartScale;
+  const tipAlignmentPoint = ostiumPosition.clone().addScaledVector(ostiumDirection, -depth);
 
-  const offsets = shape === "RCA" ? RCA_CATHETER_OFFSETS : LCA_CATHETER_OFFSETS;
-  const controlPoints = offsets.map(([upAmt, outwardAmt, lateralAmt]) =>
+  // 「し」の字(J字)エンゲージ経路。大動脈基部フレーム(aorticRootMesh.ts、冠動脈
+  // 入口部の実位置から逆算した実際の円筒)が得られている場合は、上行大動脈側から
+  // 円筒に入り(top)、対側壁へ寄りながら下降し(midDescent)、円筒下端付近まで
+  // 落とし込んで対側壁に深く当て(floor、支点=バックアップ)、そこで反転して
+  // 角度・高さの両方を対象入口部側へ戻しながら持ち上がる(hook)——実際の
+  // Judkinsカテーテルが「底に当ててから、し字の反発で下から入口部に嵌まる」
+  // 手技をそのまま表現する。フレームが無い場合(未ロード等)は、心臓中心から
+  // 見た放射方向を使った簡易フォールバックにする(内腔の中継点は使わない)。
+  let bulgePoint: Vector3;
+  let hookPoint: Vector3 | null = null;
+  let lumenPoints: Vector3[] = [];
+  let aortaPoint: Vector3;
+  if (aorticRootFrame) {
+    const frame = aorticRootFrame;
+    const contralateralAngle = shape === "RCA" ? frame.leftAngle : frame.rcaAngle;
+    // 対象冠動脈自身の実際の角度(LAD/LCXはfrmae.leftAngleの元になった平均値とは
+    // 個別にずれるため、対象個別の入口部位置から直接求める)。
+    const ownAngle = Math.atan2(ostiumPosition.z - frame.center.z, ostiumPosition.x - frame.center.x);
+
+    const pointAtAngle = (upRelative: number, angle: number, fraction: number): Vector3 => {
+      const axisPoint = pointAtRelativeHeight(frame, upRelative);
+      const dir = new Vector3(Math.cos(angle), 0, Math.sin(angle));
+      const probe = axisPoint.clone().addScaledVector(dir, 1);
+      const localBound = evaluateAorticRootRadius(frame, probe);
+      return axisPoint.addScaledVector(dir, localBound * fraction);
+    };
+
+    const floorUpRelative = shape === "RCA" ? RCA_FLOOR_UP_RELATIVE : LCA_FLOOR_UP_RELATIVE;
+    const floorWallFraction = shape === "RCA" ? RCA_FLOOR_WALL_FRACTION : LCA_FLOOR_WALL_FRACTION;
+    const mainLoopAngle = contralateralAngle + angularDiff(ownAngle, contralateralAngle) * MAIN_LOOP_ANGLE_BLEND;
+
+    const topPoint = pointAtAngle(LUMEN_TOP_UP_RELATIVE, mainLoopAngle, LUMEN_TOP_RADIUS_FRACTION);
+    const midDescentPoint = pointAtAngle(MID_DESCENT_UP_RELATIVE, mainLoopAngle, MID_DESCENT_RADIUS_FRACTION);
+    const floorPoint = pointAtAngle(floorUpRelative, mainLoopAngle, floorWallFraction);
+    // 反転点(フック): 底からわずかに持ち上がり、角度も対側壁側から対象入口部側へ
+    // HOOK_ANGLE_BLENDの割合だけ回転させる(shortest-path方向、angularDiff参照)。
+    const hookUpRelative = floorUpRelative * (1 - HOOK_UP_RELATIVE_FRACTION);
+    const hookAngle = contralateralAngle + angularDiff(ownAngle, contralateralAngle) * HOOK_ANGLE_BLEND;
+    hookPoint = pointAtAngle(hookUpRelative, hookAngle, HOOK_RADIUS_FRACTION);
+
+    bulgePoint = floorPoint;
+    lumenPoints = [topPoint, midDescentPoint];
+
+    aortaPoint = topPoint
+      .clone()
+      .addScaledVector(up, AORTA_UP_FRACTION * heartScale)
+      .addScaledVector(outward, AORTA_OUTWARD_FRACTION * heartScale);
+  } else {
+    bulgePoint = ostiumPosition
+      .clone()
+      .addScaledVector(up, FALLBACK_BULGE_UP_FRACTION * heartScale)
+      .addScaledVector(outward, FALLBACK_BULGE_OUTWARD_FRACTION * heartScale);
+    aortaPoint = ostiumPosition
+      .clone()
+      .addScaledVector(up, AORTA_UP_FRACTION * heartScale)
+      .addScaledVector(outward, AORTA_OUTWARD_FRACTION * heartScale);
+  }
+
+  // 体外側の経路(アクセスルート別)は、狙う冠動脈がどちらでも穿刺部位は体に対して
+  // 一定の側にあるため、心臓中心から見た放射方向(outward)を基準にする固定軸を使う。
+  const entryLateral = new Vector3(1, 0, 0);
+  const entryOffsets = accessRoute === "femoral" ? FEMORAL_ENTRY_OFFSETS : RADIAL_ENTRY_OFFSETS;
+  const entryPoints = entryOffsets.map(([upAmt, outwardAmt, lateralAmt]) =>
     ostiumPosition
       .clone()
       .addScaledVector(up, upAmt * heartScale)
       .addScaledVector(outward, outwardAmt * heartScale)
-      .addScaledVector(lateral, lateralAmt * heartScale),
+      .addScaledVector(entryLateral, lateralAmt * heartScale),
   );
-  controlPoints.push(ostiumPosition.clone());
-  return controlPoints;
+
+  // 体外→オスティウムの順: entry, aorta, top, midDescent, floor(=bulgePoint、底=支点),
+  // hook(底で反転して対象入口部側へ戻る「し」の字の頂点、フレームが無い場合はnullで省く),
+  // tipAlignmentPoint, ostium。
+  const controlPoints = [
+    ...entryPoints,
+    aortaPoint,
+    ...lumenPoints,
+    bulgePoint,
+    ...(hookPoint ? [hookPoint] : []),
+    tipAlignmentPoint,
+    ostiumPosition.clone(),
+  ];
+
+  // 干渉補正は、実際に描画・使用する最終点列に対して直接行う(補正後にさらに間引き・
+  // 再サンプリングを挟むと、補正で押し出した点とその隣の未補正点との間の直線/曲線補間が
+  // 再びメッシュを横切ってしまい、補正が台無しになりかねないため)。大動脈基部の内腔への
+  // 収まり(ensurePathStaysInsideAorticRoot)を先に確定させ、そのあとで心筋メッシュとの
+  // 干渉補正(ensurePathClearsHeartMesh)を行う——後者は内腔内と確定した点を対象外にする
+  // ため、順序を逆にすると2つの補正が競合しうる(isWithinAorticRootLumenのコメント参照)。
+  const curve = new CatmullRomCurve3(controlPoints);
+  const rawPoints = curve.getSpacedPoints(CATHETER_CURVE_RESOLUTION);
+  const tipGuardDistance = depth * TIP_CORRECTION_GUARD_MULTIPLIER;
+  let densePoints = aorticRootFrame
+    ? ensurePathStaysInsideAorticRoot(rawPoints, ostiumPosition, aorticRootFrame, tipGuardDistance, shape)
+    : rawPoints;
+  if (heartMesh) {
+    densePoints = ensurePathClearsHeartMesh(
+      densePoints,
+      ostiumPosition,
+      heartMesh,
+      heartCentroid,
+      heartScale,
+      tipGuardDistance,
+      aorticRootFrame,
+    );
+  }
+
+  return { controlPoints, densePoints };
 }
 
 /**
@@ -179,6 +542,9 @@ function buildCatheterControlPoints(
  * 新たな計算は行わない。
  */
 export interface GuideCatheterPlacement {
+  /** 穿刺部位(アクセスルート)。将来のバックアップ力簡易評価は、ルートによって
+   * 操作者からカテーテル先端への力の伝わり方(トルク応答等)が異なりうるため保持する。 */
+  accessRoute: GuideAccessRoute;
   /** カテーテル先端の位置(=エンゲージした冠動脈入口部の位置と同一点)。 */
   tipPosition: Vector3;
   /**
@@ -208,18 +574,32 @@ export interface GuideCatheterPath {
 }
 
 /**
- * カテーテルのスプラインを弧長に沿って均等サンプリングする点数。大動脈側の
- * アプローチ区間(P0〜P2)が弧長の大半を占めるため、控えめな点数だとオスティウム
- * 手前のループ(P2〜P5、弧長としては短い)が粗くカクついて見える。ループを
- * 滑らかに解像できるだけの点数を確保する。
+ * カテーテルのスプラインを弧長に沿って均等サンプリングする点数。体外側〜大動脈基部の
+ * アプローチ区間が弧長の大半を占めるため、控えめな点数だとオスティウム手前のバルジ
+ * (弧長としては短い)が粗くカクついて見える。この点数は心筋メッシュとの干渉検証・補正
+ * (ensurePathClearsHeartMesh)の解像度も兼ねるため、オスティウム近傍の危険域を十分
+ * 細かく捉えられるだけの点数を確保する。
  */
-const CATHETER_CURVE_RESOLUTION = 64;
+const CATHETER_CURVE_RESOLUTION = 200;
 
+/**
+ * @param aorticRootFrame 冠動脈入口部の実位置から逆算した大動脈基部フレーム
+ * (aorticRootMesh.ts の computeAorticRootFrame。呼び出し側のgraphs(VesselId→VesselGraph)
+ * とheartCentroidから求める——このファイル自身はVesselIdの列挙を知らないため、
+ * 呼び出し側の責務とする)。対側壁バルジ点(buildCatheterApproach参照)の基準に使う。
+ * 未ロード等でnullの場合はheartScaleベースの簡易フォールバックになる。
+ * @param heartMesh 心筋メッシュ本体。経路が心筋を貫通していないかの検証・補正
+ * (ensurePathClearsHeartMesh参照)に使う。未ロード等でnullの場合は検証・補正を
+ * スキップする(パラメトリックな構築のみになる)。
+ */
 export function computeGuideCatheterPath(
   graph: VesselGraph,
   heartCentroid: Vector3,
   heartScale: number,
   vesselId: VesselId,
+  accessRoute: GuideAccessRoute,
+  aorticRootFrame: AorticRootFrame | null,
+  heartMesh: Mesh | null,
 ): GuideCatheterPath | null {
   const mainTrunk = getMainTrunk(graph);
   if (mainTrunk.points.length === 0) return null;
@@ -228,10 +608,18 @@ export function computeGuideCatheterPath(
   const ostiumDirection = sampleCenterline(mainTrunk.points, 0).tangent.clone();
 
   const shape = shapeForVessel(vesselId);
-  const controlPoints = buildCatheterControlPoints(ostiumPosition, heartCentroid, heartScale, shape);
-  const curve = new CatmullRomCurve3(controlPoints);
-  const fullSplinePoints = curve.getSpacedPoints(CATHETER_CURVE_RESOLUTION);
-  const aorticPathLength = curve.getLength();
+  const { controlPoints, densePoints } = buildCatheterApproach(
+    ostiumPosition,
+    ostiumDirection,
+    heartCentroid,
+    heartScale,
+    shape,
+    accessRoute,
+    aorticRootFrame,
+    heartMesh,
+  );
+  const fullSplinePoints = densePoints;
+  const aorticPathLength = polylineLength(densePoints);
 
   const tipDelta = new Vector3().subVectors(
     controlPoints[controlPoints.length - 1],
@@ -239,7 +627,16 @@ export function computeGuideCatheterPath(
   );
   const tipDirection = tipDelta.lengthSq() > 1e-10 ? tipDelta.normalize() : ostiumDirection.clone();
 
+  // 検証: カテーテル先端の座標が、対象冠動脈の起始ノード(中心線グラフの根ノード)の
+  // 座標と一致することを確認する(tipPositionはostiumPositionそのものの複製のため
+  // 構造的に厳密に一致するが、念のため実測してログで報告する)。
+  console.log(
+    `[guideDeviceMesh] 先端座標の検証(${vesselId}): 先端-入口部間の距離=` +
+      `${ostiumPosition.distanceTo(mainTrunk.points[0].position).toExponential(2)}(0であるべき)`,
+  );
+
   const placement: GuideCatheterPlacement = {
+    accessRoute,
     tipPosition: ostiumPosition.clone(),
     tipDirection,
     ostiumPosition: ostiumPosition.clone(),
@@ -253,8 +650,9 @@ export function computeGuideCatheterPath(
 
 /** カテーテル1本あたりの円周分割数(血管と同程度の太さのため、ワイヤーより多めに)。 */
 const CATHETER_RADIAL_SEGMENTS = 12;
-/** ワイヤー1本あたりの円周分割数(非常に細いため少なめで十分)。 */
-const WIRE_RADIAL_SEGMENTS = 6;
+/** ワイヤー1本あたりの円周分割数。実寸相応の太さ(WIRE_RADIUS_RATIO参照)に上げたため、
+ * 以前の6分割のままだと断面の角ばりが目立つ。滑らかな丸みを保てる分割数にする。 */
+const WIRE_RADIAL_SEGMENTS = 10;
 
 /**
  * カテーテルの挿入アニメーション用ジオメトリを、進行度(0〜1、0=未挿入、1=完全に
@@ -309,8 +707,8 @@ export function buildGuideCatheterGeometry(
  * 直線区間ではラプラシアン(隣接2点の中点 - 自分自身)がほぼゼロになるため、
  * このワイヤーは湾曲部でだけ視覚的な効果を持ち、直線区間の中心線からは動かない。
  */
-const WIRE_RELAX_ITERATIONS = 6;
-const WIRE_RELAX_STIFFNESS = 0.5;
+const WIRE_RELAX_ITERATIONS = 9;
+const WIRE_RELAX_STIFFNESS = 0.65;
 /** 内腔半径のうち実際にオフセットを許容する比率(狭窄・ステント等のSTENT_LUMEN_FIT_RATIO=0.95と同様、壁ぎりぎりに一致させると誤差でチューブが血管の外にはみ出しかねないため、わずかに内側に留める)。 */
 const WIRE_LUMEN_FIT_RATIO = 0.9;
 
@@ -340,6 +738,77 @@ function relaxSemiRigidWire(points: Vector3[], lumenRadii: number[], wireRadius:
   return current;
 }
 
+/** フロッピーチップの円弧が全体でどれだけ曲がるか(ラジアン)。実物のガイドワイヤー先端に
+ * 特徴的な、J字/カール状に丸まった柔らかい形状を模す(実際の手技上の意味はなく、純粋に
+ * 見た目のための装飾)。 */
+const FLOPPY_TIP_ARC_RADIANS = (110 * Math.PI) / 180;
+/** フロッピーチップの円弧を近似する分割点数。 */
+const FLOPPY_TIP_SEGMENTS = 6;
+/** フロッピーチップのカール半径を、ワイヤー本体の半径の何倍にするか(実物は太さの数倍程度の
+ * 緩いカーブを描く)。 */
+const FLOPPY_TIP_CURL_RADIUS_TO_WIRE_RATIO = 9;
+/** カール半径がこれ未満なら省略する(挿入直後の短いスタブに対して不自然に大きく見えるのを防ぐ)。 */
+const FLOPPY_TIP_MIN_CURL_RADIUS_TO_WIRE_RATIO = 1.5;
+
+/**
+ * ワイヤー先端に、実物のフロッピーチップを模した柔らかいカール(円弧)を追加する。
+ * 挿入経路(中心線・進行度)の計算そのものには一切影響しない、純粋に見た目のための
+ * 装飾的な延長であり、末端点(=進行度から求めた本来の先端位置)の接線方向から
+ * 連続的に(C1連続に)始まるようにする。
+ *
+ * カール半径は、(1)手前の描画済み区間の弧長、(2)先端付近の内腔半径、の両方で頭打ちに
+ * する——挿入直後の短いスタブや、先端が細い末梢枝にある場合に、カールが実際の
+ * 長さ・血管の太さに対して不自然に大きくならないようにするため。頭打ちにより
+ * カール半径が小さくなりすぎる場合は、カール自体を省略する(無理に小さく潰れた
+ * カールを描くより、まっすぐな先端のままの方が自然なため)。
+ */
+function appendFloppyTip(
+  points: Vector3[],
+  wireRadius: number,
+  lumenRadiusAtTip: number,
+): { points: Vector3[]; radii: number[] } {
+  const straightRadii = points.map(() => wireRadius);
+  const tipIndex = points.length - 1;
+  if (tipIndex < 1) return { points, radii: straightRadii };
+
+  const tangent = points[tipIndex].clone().sub(points[tipIndex - 1]);
+  if (tangent.lengthSq() < 1e-12) return { points, radii: straightRadii };
+  tangent.normalize();
+
+  const availableLength = polylineLength(points);
+  const maxByLumen = Math.max(lumenRadiusAtTip - wireRadius, 0) * 0.8;
+  const curlRadius = Math.min(wireRadius * FLOPPY_TIP_CURL_RADIUS_TO_WIRE_RATIO, availableLength * 0.4, maxByLumen);
+  if (curlRadius < wireRadius * FLOPPY_TIP_MIN_CURL_RADIUS_TO_WIRE_RATIO) {
+    return { points, radii: straightRadii };
+  }
+
+  // 接線方向と直交する、一貫した向きの平面(curlAxis)を選ぶ。参照ベクトルは接線とほぼ
+  // 平行な場合だけ別の軸に切り替える(stentLatticeMesh.tsのcomputeTubeFrameと同じ考え方)。
+  let reference = new Vector3(0, 1, 0);
+  if (Math.abs(tangent.dot(reference)) > 0.95) reference = new Vector3(1, 0, 0);
+  const curlPlaneNormal = new Vector3().crossVectors(tangent, reference).normalize();
+  const curlAxis = new Vector3().crossVectors(curlPlaneNormal, tangent).normalize();
+
+  // 中心を先端からcurlAxis方向にcurlRadius分オフセットし、角度=πの点がちょうど
+  // 先端(base)に一致し、角度減少方向の接線がtangentと一致するように弧をパラメータ化する。
+  const center = points[tipIndex].clone().addScaledVector(curlAxis, curlRadius);
+  const curlPoints: Vector3[] = [];
+  const curlRadii: number[] = [];
+  for (let i = 1; i <= FLOPPY_TIP_SEGMENTS; i++) {
+    const t = i / FLOPPY_TIP_SEGMENTS;
+    const angle = Math.PI - t * FLOPPY_TIP_ARC_RADIANS;
+    const pos = center
+      .clone()
+      .addScaledVector(curlAxis, Math.cos(angle) * curlRadius)
+      .addScaledVector(tangent, Math.sin(angle) * curlRadius);
+    curlPoints.push(pos);
+    // 先端に向かってわずかに細くし、実物の柔らかいフロッピーチップらしさを出す。
+    curlRadii.push(wireRadius * (1 - 0.35 * t));
+  }
+
+  return { points: [...points, ...curlPoints], radii: [...straightRadii, ...curlRadii] };
+}
+
 /**
  * ワイヤーの挿入アニメーション用ジオメトリを、進行度(0〜1)に応じて構築する。
  *
@@ -358,6 +827,8 @@ function relaxSemiRigidWire(points: Vector3[], lumenRadii: number[], wireRadius:
  * 1を超えた瞬間にカテーテルの全長ぶんが一気に出現して見える不具合の原因だった。
  *
  * 進行度が0の場合は「まだカテーテルの中から出ていない」とみなしnullを返す。
+ *
+ * 緩和(relaxSemiRigidWire)後、先端にappendFloppyTipで装飾的なカールを追加する。
  */
 export function buildGuideWireGeometry(
   graph: VesselGraph,
@@ -400,10 +871,10 @@ export function buildGuideWireGeometry(
   }
 
   const relaxed = relaxSemiRigidWire(grown, grownRadii, wireRadius);
-  const tubeRadii = relaxed.map(() => wireRadius);
+  const { points: withFloppyTip, radii: tubeRadii } = appendFloppyTip(relaxed, wireRadius, grownRadii[grownRadii.length - 1]);
   // 平滑化(buildTubeFromPointsのsmoothingPasses)は一切かけない。relaxSemiRigidWireが
   // 既に湾曲部の見た目を調整済みであり、これ以上の平滑化は先端位置を後退させる
   // (このファイルの以前のコメント、および同様の問題を持つ他の長経路チューブ
   // (Phase 7の造影剤チューブ)と同じ理由)。
-  return buildTubeFromPoints(relaxed, tubeRadii, WIRE_RADIAL_SEGMENTS, 0);
+  return buildTubeFromPoints(withFloppyTip, tubeRadii, WIRE_RADIAL_SEGMENTS, 0);
 }

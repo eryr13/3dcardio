@@ -12,9 +12,11 @@ function opacityToPercent(opacity: number) {
  */
 export function AnatomyLegend() {
   const heart = useCardioStore((s) => s.heart);
+  const aorticRoot = useCardioStore((s) => s.aorticRoot);
   const vessels = useCardioStore((s) => s.vessels);
   const segmentMode = useCardioStore((s) => s.segmentMode);
   const setHeartDisplay = useCardioStore((s) => s.setHeartDisplay);
+  const setAorticRootDisplay = useCardioStore((s) => s.setAorticRootDisplay);
   const setVesselDisplay = useCardioStore((s) => s.setVesselDisplay);
   const toggleSegmentMode = useCardioStore((s) => s.toggleSegmentMode);
   const resetDisplayDefaults = useCardioStore((s) => s.resetDisplayDefaults);
@@ -45,6 +47,32 @@ export function AnatomyLegend() {
           />
           <span className="opacity-value">{opacityToPercent(heart.opacity)}%</span>
         </label>
+      </div>
+
+      <div className="anatomy-item">
+        <label className="anatomy-item-header">
+          <input
+            type="checkbox"
+            checked={aorticRoot.visible}
+            onChange={(e) => setAorticRootDisplay({ visible: e.target.checked })}
+          />
+          <span className="legend-swatch" style={{ backgroundColor: aorticRoot.color }} />
+          {aorticRoot.name}
+        </label>
+        <label className="opacity-control">
+          不透明度
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={opacityToPercent(aorticRoot.opacity)}
+            onChange={(e) => setAorticRootDisplay({ opacity: Number(e.target.value) / 100 })}
+          />
+          <span className="opacity-value">{opacityToPercent(aorticRoot.opacity)}%</span>
+        </label>
+        <p className="panel-note">
+          冠動脈入口部の位置から生成した簡易形状です(実メッシュではなく、ガイディングカテーテルのエンゲージ位置を理解しやすくするための補助表示)。
+        </p>
       </div>
 
       <h3 className="panel-subheading">冠動脈</h3>
