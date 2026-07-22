@@ -6,6 +6,8 @@ import type {
   ClippingAxis,
   ClippingState,
   HeartState,
+  ValveId,
+  ValveState,
   VesselId,
   VesselState,
 } from "../types/anatomy";
@@ -29,7 +31,7 @@ import { getMainTrunk, getVesselGraph } from "../components/models/vesselGraph";
  * メインビューの初期カメラ位置。CameraRig.tsx が実際にマウントした際もこの値を使う
  * (このファイルからimportする、二重定義しない)。
  */
-export const DEFAULT_CAMERA_POSITION: [number, number, number] = [4, 2.5, 5];
+export const DEFAULT_CAMERA_POSITION: [number, number, number] = [7.2, 4.5, 9];
 
 interface CardioStore {
   heart: HeartState;
@@ -40,6 +42,14 @@ interface CardioStore {
    * 確認したいときに任意でONにする補助表示のため)。
    */
   aorticRoot: AorticRootState;
+  /**
+   * 4つの弁(大動脈弁・肺動脈弁・僧帽弁・三尖弁)の表示状態。心臓モデルには弁の
+   * ラベル情報が含まれていないため、大動脈基部と同様、冠動脈入口部の位置から
+   * 逆算した推定位置に円盤を表示する(heartValveMesh.ts、ValveOverlay参照)。
+   * 大動脈基部が接続すべき位置(大動脈弁の直上)を視覚的に確認しやすくするための
+   * 補助表示。既定は非表示。
+   */
+  valves: Record<ValveId, ValveState>;
   /**
    * 血管(主幹単位、またはセグメント単位)の状態を id で引けるマップ。
    * segmentMode の切り替えで、この中身が主幹3本 <-> セグメント群に丸ごと
@@ -56,6 +66,9 @@ interface CardioStore {
 
   setHeartDisplay: (patch: Partial<Omit<HeartState, "id" | "name">>) => void;
   setAorticRootDisplay: (patch: Partial<Omit<AorticRootState, "id" | "name">>) => void;
+  setValveDisplay: (id: ValveId, patch: Partial<Omit<ValveState, "id" | "name">>) => void;
+  /** 4つの弁の表示/非表示をまとめて切り替える(サイドバーの「まとめて表示/非表示」トグル用)。 */
+  setAllValvesVisible: (visible: boolean) => void;
   setVesselDisplay: (
     id: string,
     patch: Partial<Omit<VesselState, "id" | "name" | "parentVessel">>,
@@ -142,6 +155,12 @@ interface CardioStore {
    */
   debugShowCenterlines: boolean;
   setDebugShowCenterlines: (v: boolean) => void;
+  /** ONの間、3Dビュー上で心臓メッシュをクリックすると、その点のワールド座標と
+   * 大動脈基部フレーム基準の相対座標をコンソールへ出力する(ModelLoader.tsx参照)。
+   * 弁の位置など、実データの無い構造をユーザー自身の目視識別で校正するための
+   * デバッグ機能。 */
+  debugCoordinatePicker: boolean;
+  setDebugCoordinatePicker: (v: boolean) => void;
   stentLatticeParams: StentLatticeParams;
   setStentLatticeParams: (patch: Partial<StentLatticeParams>) => void;
 
@@ -186,6 +205,7 @@ interface CardioStore {
   setGuideDevicePlaying: (playing: boolean) => void;
   setGuideDeviceInsertionDuration: (seconds: number) => void;
   setGuideDeviceAccessRoute: (route: GuideAccessRoute) => void;
+  setGuideDeviceShowDebugPath: (show: boolean) => void;
   /**
    * カテーテル・ワイヤーの現在の配置(先端位置・向き等)。Phase 10のバックアップ力
    * 簡易評価が参照しやすいよう、GuideDeviceMeshes.tsx/CineAnatomyModel.tsxが
@@ -216,6 +236,29 @@ const DEFAULT_HEART_OPACITY = 0.9;
 
 const DEFAULT_AORTIC_ROOT_COLOR = "#d98a8a";
 const DEFAULT_AORTIC_ROOT_OPACITY = 0.45;
+
+/** 弁の既定の色・不透明度(色は要望通り大動脈弁=赤・肺動脈弁=青・僧帽弁=緑・
+ * 三尖弁=黄だが、冠動脈(RCA=青・LAD=緑・LCX=黄)と同時表示した際に見分けやすい
+ * よう、少しトーンを変えている)。 */
+const DEFAULT_VALVE_OPACITY = 0.6;
+const initialValves: Record<ValveId, ValveState> = {
+  AORTIC: { id: "AORTIC", name: "大動脈弁 (aortic valve)", visible: false, color: "#e0453f", opacity: DEFAULT_VALVE_OPACITY },
+  PULMONARY: {
+    id: "PULMONARY",
+    name: "肺動脈弁 (pulmonary valve)",
+    visible: false,
+    color: "#3d6fe0",
+    opacity: DEFAULT_VALVE_OPACITY,
+  },
+  MITRAL: { id: "MITRAL", name: "僧帽弁 (mitral valve)", visible: false, color: "#3fbf6e", opacity: DEFAULT_VALVE_OPACITY },
+  TRICUSPID: {
+    id: "TRICUSPID",
+    name: "三尖弁 (tricuspid valve)",
+    visible: false,
+    color: "#e0c23d",
+    opacity: DEFAULT_VALVE_OPACITY,
+  },
+};
 
 const initialClipping: ClippingState = {
   x: { enabled: false, position: 0 },
@@ -310,6 +353,7 @@ const initialGuideDevice: GuideDeviceState = {
   insertionPhase: 0,
   playing: false,
   insertionDurationSeconds: DEFAULT_INSERTION_DURATION_SECONDS,
+  showCatheterDebugPath: false,
 };
 
 export const useCardioStore = create<CardioStore>((set) => ({
@@ -321,6 +365,7 @@ export const useCardioStore = create<CardioStore>((set) => ({
     color: DEFAULT_AORTIC_ROOT_COLOR,
     opacity: DEFAULT_AORTIC_ROOT_OPACITY,
   },
+  valves: initialValves,
 
   vessels: TRUNK_VESSELS,
   segmentMode: false,
@@ -334,6 +379,18 @@ export const useCardioStore = create<CardioStore>((set) => ({
 
   setAorticRootDisplay: (patch) =>
     set((state) => ({ aorticRoot: { ...state.aorticRoot, ...patch } })),
+
+  setValveDisplay: (id, patch) =>
+    set((state) => ({ valves: { ...state.valves, [id]: { ...state.valves[id], ...patch } } })),
+
+  setAllValvesVisible: (visible) =>
+    set((state) => {
+      const valves = { ...state.valves };
+      for (const id of Object.keys(valves) as ValveId[]) {
+        valves[id] = { ...valves[id], visible };
+      }
+      return { valves };
+    }),
 
   setVesselDisplay: (id, patch) =>
     set((state) => ({
@@ -356,10 +413,15 @@ export const useCardioStore = create<CardioStore>((set) => ({
           ? { ...vessel, color: fallback.color, opacity: fallback.opacity }
           : vessel;
       }
+      const valves = { ...state.valves };
+      for (const id of Object.keys(valves) as ValveId[]) {
+        valves[id] = { ...valves[id], color: initialValves[id].color, opacity: initialValves[id].opacity };
+      }
       return {
         heart: { ...state.heart, color: DEFAULT_HEART_COLOR, opacity: DEFAULT_HEART_OPACITY },
         aorticRoot: { ...state.aorticRoot, color: DEFAULT_AORTIC_ROOT_COLOR, opacity: DEFAULT_AORTIC_ROOT_OPACITY },
         vessels,
+        valves,
       };
     }),
 
@@ -476,6 +538,8 @@ export const useCardioStore = create<CardioStore>((set) => ({
 
   debugShowCenterlines: false,
   setDebugShowCenterlines: (v) => set({ debugShowCenterlines: v }),
+  debugCoordinatePicker: false,
+  setDebugCoordinatePicker: (v) => set({ debugCoordinatePicker: v }),
 
   stentLatticeParams: DEFAULT_STENT_LATTICE_PARAMS,
   setStentLatticeParams: (patch) =>
@@ -541,6 +605,9 @@ export const useCardioStore = create<CardioStore>((set) => ({
     set((state) => ({ guideDevice: { ...state.guideDevice, showCatheter: show } })),
 
   setGuideDeviceShowWire: (show) => set((state) => ({ guideDevice: { ...state.guideDevice, showWire: show } })),
+
+  setGuideDeviceShowDebugPath: (show) =>
+    set((state) => ({ guideDevice: { ...state.guideDevice, showCatheterDebugPath: show } })),
 
   setGuideDeviceTargetVessel: (vesselId) =>
     set((state) => ({

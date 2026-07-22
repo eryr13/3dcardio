@@ -41,6 +41,7 @@ export function GuideDeviceControls() {
   const setGuideDevicePlaying = useCardioStore((s) => s.setGuideDevicePlaying);
   const setGuideDeviceInsertionDuration = useCardioStore((s) => s.setGuideDeviceInsertionDuration);
   const setGuideDeviceAccessRoute = useCardioStore((s) => s.setGuideDeviceAccessRoute);
+  const setGuideDeviceShowDebugPath = useCardioStore((s) => s.setGuideDeviceShowDebugPath);
 
   const graph = useMemo(() => getVesselGraph(guideDevice.targetVesselId), [guideDevice.targetVesselId]);
 
@@ -106,7 +107,7 @@ export function GuideDeviceControls() {
           </label>
 
           <label className="object-form-row">
-            対象血管
+            対象血管(カテーテル・ワイヤー)
             <select
               value={guideDevice.targetVesselId}
               onChange={(e) => setGuideDeviceTargetVessel(e.target.value as VesselId)}
@@ -138,6 +139,19 @@ export function GuideDeviceControls() {
             <input type="checkbox" checked={guideDevice.showWire} onChange={(e) => setGuideDeviceShowWire(e.target.checked)} />
             ガイドワイヤーを表示
           </label>
+          <label className="segment-mode-toggle">
+            <input
+              type="checkbox"
+              checked={guideDevice.showCatheterDebugPath}
+              onChange={(e) => setGuideDeviceShowDebugPath(e.target.checked)}
+            />
+            デバッグ: 経路の制御点・全体を表示
+          </label>
+          <p className="panel-note">
+            カテーテル経路の構築に使う制御点(色分けした球、体外側→入口部の順)と、実際に
+            密サンプリングした経路全体(明るい線)を、心臓メッシュ越しでも常に手前に表示します。
+            経路が意図した領域を通っていない場合の原因切り分け用です。
+          </p>
 
           <div className="cine-transport">
             <button type="button" onClick={guideDevice.playing ? () => setGuideDevicePlaying(false) : handlePlay}>

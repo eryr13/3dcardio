@@ -33,4 +33,12 @@ export interface GuideDeviceState {
   playing: boolean;
   /** 挿入アニメーション全体(進行度0→2)の再生時間(秒)。GUIのスライダーで調整可能。 */
   insertionDurationSeconds: number;
+  /**
+   * デバッグ表示: カテーテル経路の構築に使う制御点(体外側→オスティウムの順、
+   * GuideCatheterPlacement.controlPoints)と、密にサンプリングした経路全体
+   * (fullSplinePoints)を、常に手前に描画する球マーカー+ラインとして可視化する。
+   * 経路が意図した領域からはみ出す・繋がらない等の不具合を切り分けるための機能で、
+   * 通常のシーンには含まれない解剖学的に無意味な補助表示のため既定は非表示。
+   */
+  showCatheterDebugPath: boolean;
 }

@@ -8,6 +8,8 @@ import { CollapsibleSection } from "./CollapsibleSection";
 export function DebugPanel() {
   const debugShowCenterlines = useCardioStore((s) => s.debugShowCenterlines);
   const setDebugShowCenterlines = useCardioStore((s) => s.setDebugShowCenterlines);
+  const debugCoordinatePicker = useCardioStore((s) => s.debugCoordinatePicker);
+  const setDebugCoordinatePicker = useCardioStore((s) => s.setDebugCoordinatePicker);
   const stentLatticeParams = useCardioStore((s) => s.stentLatticeParams);
   const setStentLatticeParams = useCardioStore((s) => s.setStentLatticeParams);
 
@@ -21,6 +23,19 @@ export function DebugPanel() {
         />
         中心線グラフを3Dビューに表示(本幹=白、側枝=色分け)
       </label>
+      <label className="segment-mode-toggle">
+        <input
+          type="checkbox"
+          checked={debugCoordinatePicker}
+          onChange={(e) => setDebugCoordinatePicker(e.target.checked)}
+        />
+        座標ピッカー(心臓メッシュをクリックすると座標をコンソールに出力)
+      </label>
+      {debugCoordinatePicker && (
+        <p className="panel-note">
+          心臓メッシュ(半透明にして内部が見える状態がおすすめ)をクリックすると、ブラウザの開発者ツールのコンソールに、クリック位置のワールド座標と、大動脈基部フレーム基準(左右/前後/頭側方向、heartScale比率)の相対座標を出力します。弁の位置など、実データの無い構造の位置を目視で特定・報告する際に使ってください。
+        </p>
+      )}
 
       <h3 className="panel-subheading">ステントの網目(オープンセル・リング構造)</h3>
       <label className="object-form-row">

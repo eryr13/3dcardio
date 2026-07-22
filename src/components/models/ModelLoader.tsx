@@ -1,19 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Html, Line, useGLTF } from "@react-three/drei";
+import type { ThreeEvent } from "@react-three/fiber";
 import { Box3, MeshStandardMaterial, Vector3 } from "three";
 import type { BufferGeometry, Mesh } from "three";
 import type { AnatomyDisplayState, VesselId, ModelSource } from "../../types/anatomy";
 import type { CardioObject, StentObject } from "../../types/object";
 import { useCardioStore } from "../../store/useCardioStore";
 import { AorticRootOverlay } from "./AorticRootOverlay";
-import { buildAorticCavityClippingPlanes, computeAorticRootFrame } from "./aorticRootMesh";
+import { buildAorticCavityClippingPlanes, computeAorticRootFrame, computeOstiumChordFitPosition } from "./aorticRootMesh";
 import { ContrastFillTube } from "./ContrastFillTube";
 import { GuideDeviceMeshes } from "./GuideDeviceMeshes";
+import { detectAorticOpening } from "./heartAorticOpening";
 import { HeartModel } from "./HeartModel";
 import { HeartbeatGroup } from "./HeartbeatGroup";
 import { HeartPerfusionOverlay } from "./HeartPerfusionOverlay";
 import { ObjectMeshes } from "./ObjectMeshes";
 import { buildStentGeometry } from "./stentLatticeMesh";
+import { computeHeartScale, computeHeartWidth } from "./useGuideDevicePath";
+import { ValveOverlay } from "./ValveOverlay";
 import { VesselModel } from "./VesselModel";
 import type { VesselGraph } from "./vesselGraph";
 import { getBranch, getBranchesAtNode, getMainTrunk, getVesselGraph } from "./vesselGraph";
@@ -198,6 +202,7 @@ function GltfAnatomyModels({ url }: { url: string }) {
   const perfusionMode = useCardioStore((s) => s.perfusion.mode);
   const guideDeviceEnabled = useCardioStore((s) => s.guideDevice.enabled);
   const aorticRootVisible = useCardioStore((s) => s.aorticRoot.visible);
+  const debugCoordinatePicker = useCardioStore((s) => s.debugCoordinatePicker);
   const [hovered, setHovered] = useState<{ id: string; point: Vector3 } | null>(null);
 
   const meshesByName = useMemo(() => {
@@ -216,6 +221,13 @@ function GltfAnatomyModels({ url }: { url: string }) {
     if (!heartMesh) return new Vector3(0, 0, 0);
     return new Box3().setFromObject(heartMesh).getCenter(new Vector3());
   }, [meshesByName]);
+
+  // 弓部・下行大動脈(AorticRootOverlay)が心臓の外側を回り込む距離のスケール基準
+  // (aorticRootMesh.tsのbuildAorticArchGeometry参照)。
+  const heartScale = useMemo(() => computeHeartScale(meshesByName.get("HEART")), [meshesByName]);
+  // 上行大動脈・大動脈弓・下行大動脈の太さ(computeAorticRootFrameのheartWidth引数)の
+  // 算出基準(AorticRootFrame.ascendingRadiusのコメント参照)。
+  const heartWidth = useMemo(() => computeHeartWidth(meshesByName.get("HEART")), [meshesByName]);
 
   // 中心線グラフ(本幹+側枝)は scripts/extract_centerlines.py が事前生成した
   // src/data/centerlines.json をそのまま使う。メッシュには依存しないため useMemo は不要。
@@ -236,6 +248,23 @@ function GltfAnatomyModels({ url }: { url: string }) {
     if (heartMesh && perfusionMode !== "off") heartMesh.visible = false;
   }, [meshesByName, heart, perfusionMode]);
 
+  // 心筋メッシュに実在する、大動脈弁輪相当の開口部(セグメンテーション由来——この領域は
+  // 心筋組織として再構成されていない)の実測(heartAorticOpening.ts参照)。冠動脈入口部
+  // からの弦当てはめは幾何学的な推定値に過ぎないが、実際にメッシュ側で組織が途切れて
+  // いる場所を大動脈基部の中心として使うことで、心筋メッシュとの継ぎ目をより自然にする
+  // (実測ではほぼ同じ位置を指すことを確認済み)。approxCenter(探索の起点)には、まず
+  // 弦当てはめの位置を使う。ヒットしない場合(グラフ未ロード時等)はcomputeAorticRootFrame
+  // 側が従来通りの弦当てはめのみにフォールバックする。
+  const aorticOpeningApproxCenter = useMemo(() => computeOstiumChordFitPosition(heartCentroid, graphs)?.center ?? null, [
+    heartCentroid,
+    graphs,
+  ]);
+  const detectedAorticOpening = useMemo(() => {
+    const heartMesh = meshesByName.get("HEART");
+    if (!heartMesh || !aorticOpeningApproxCenter || heartScale <= 1e-6) return null;
+    return detectAorticOpening(heartMesh, aorticOpeningApproxCenter, heartScale);
+  }, [meshesByName, aorticOpeningApproxCenter, heartScale]);
+
   // 大動脈基部フレーム(GuideDeviceMeshes/AorticRootOverlayと同じ、冠動脈入口部の実位置
   // から幾何学的に逆算したもの)。心筋メッシュ(Heart)には大動脈の内腔が別メッシュとして
   // 分離されておらず、この領域は実質組織として表現されている(guideDeviceMesh.tsの
@@ -243,21 +272,46 @@ function GltfAnatomyModels({ url }: { url: string }) {
   // 「内部」と判定され、経路点をどう補正しても解消できないことを確認済み)。このため、
   // ガイディングカテーテル(またはそのエンゲージ位置を示す大動脈基部の補助表示)を
   // 見せる場合だけ、心筋メッシュ側にこの領域の空洞をクリッピングで開ける。
-  const aorticRootFrame = useMemo(() => computeAorticRootFrame(heartCentroid, graphs), [heartCentroid, graphs]);
+  const aorticRootFrame = useMemo(
+    () => computeAorticRootFrame(heartCentroid, graphs, heartWidth, detectedAorticOpening),
+    [heartCentroid, graphs, heartWidth, detectedAorticOpening],
+  );
+
+  // デバッグ用座標ピッカー(DebugPanel.tsx参照)。ONの間、心臓メッシュ(または他の
+  // モデル)をクリックすると、その点のワールド座標と、大動脈基部フレームの中心
+  // (frame.center)からのワールドXYZ方向オフセット(heartScale比率、
+  // heartValveMesh.tsの各弁のWORLD_OFFSET定数と同じ形式)をコンソールへ出力する
+  // ——弁の位置など、実データの無い構造をユーザー自身の目視識別で校正するためのツール。
+  const handleDebugClick = useCallback(
+    (event: ThreeEvent<MouseEvent>) => {
+      if (!debugCoordinatePicker) return;
+      event.stopPropagation();
+      const point = event.point;
+      console.log(`[座標ピッカー] クリック位置(ワールド座標): (${point.x.toFixed(4)}, ${point.y.toFixed(4)}, ${point.z.toFixed(4)})`);
+      if (aorticRootFrame && heartScale > 1e-6) {
+        const offset = point.clone().sub(aorticRootFrame.center).divideScalar(heartScale);
+        console.log(
+          "[座標ピッカー] frame.centerからのワールドXYZオフセット(heartScale比率、heartValveMesh.tsのWORLD_OFFSET定数と同じ形式): " +
+            `(${offset.x.toFixed(4)}, ${offset.y.toFixed(4)}, ${offset.z.toFixed(4)})`,
+        );
+      }
+    },
+    [debugCoordinatePicker, aorticRootFrame, heartScale],
+  );
 
   useEffect(() => {
     const heartMesh = meshesByName.get("HEART");
     if (!heartMesh) return;
     const material = heartMesh.material as MeshStandardMaterial;
     const showCavity = (guideDeviceEnabled || aorticRootVisible) && aorticRootFrame !== null;
-    material.clippingPlanes = showCavity ? buildAorticCavityClippingPlanes(aorticRootFrame!) : [];
+    material.clippingPlanes = showCavity ? buildAorticCavityClippingPlanes(aorticRootFrame!, detectedAorticOpening) : [];
     material.clipIntersection = true;
     material.needsUpdate = true;
     return () => {
       material.clippingPlanes = [];
       material.needsUpdate = true;
     };
-  }, [meshesByName, aorticRootFrame, guideDeviceEnabled, aorticRootVisible]);
+  }, [meshesByName, aorticRootFrame, guideDeviceEnabled, aorticRootVisible, detectedAorticOpening]);
 
   // 主幹メッシュの表示: セグメントモード中は元メッシュを隠し、置き換え用のJSXメッシュ側で
   // 描画する。それ以外は従来通り store の値を反映する(狭窄は血管ジオメトリを一切変形しない
@@ -338,15 +392,33 @@ function GltfAnatomyModels({ url }: { url: string }) {
 
   return (
     <HeartbeatGroup>
-      <primitive object={scene} />
+      <primitive object={scene} onClick={handleDebugClick} />
 
       {perfusionMode !== "off" && (
         <HeartPerfusionOverlay heartMesh={meshesByName.get("HEART")} graphs={graphs} objects={objects} />
       )}
 
-      <GuideDeviceMeshes heartMesh={meshesByName.get("HEART")} heartCentroid={heartCentroid} graphs={graphs} />
+      <GuideDeviceMeshes
+        heartMesh={meshesByName.get("HEART")}
+        heartCentroid={heartCentroid}
+        graphs={graphs}
+        detectedAorticOpening={detectedAorticOpening}
+      />
 
-      <AorticRootOverlay heartCentroid={heartCentroid} graphs={graphs} />
+      <AorticRootOverlay
+        heartCentroid={heartCentroid}
+        heartScale={heartScale}
+        heartWidth={heartWidth}
+        graphs={graphs}
+        detectedAorticOpening={detectedAorticOpening}
+      />
+
+      <ValveOverlay
+        heartCentroid={heartCentroid}
+        heartWidth={heartWidth}
+        graphs={graphs}
+        detectedAorticOpening={detectedAorticOpening}
+      />
 
       {segmentMode &&
         VESSEL_IDS.flatMap((trunkId) => {

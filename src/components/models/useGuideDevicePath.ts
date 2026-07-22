@@ -24,6 +24,19 @@ export function computeHeartScale(heartMesh: Mesh | undefined): number {
   return Math.max(size.length() / 2, 0.01);
 }
 
+/**
+ * 心臓の左右方向の幅(バウンディングボックスのX軸方向のサイズ、aorticRootMesh.tsの
+ * ARCH_LEFT_DIRECTION=(1,0,0)と同じ軸の規約)。computeAorticRootFrameが、上行大動脈・
+ * 大動脈弓・下行大動脈の太さ(frame.ascendingRadius)を心臓のサイズから算出するために使う
+ * (AorticRootFrame.ascendingRadiusのコメント参照——冠動脈入口部の間隔から逆算する
+ * sinusRadiusとは独立に、心臓全体のサイズに対して解剖学的に妥当な太さになるようにする)。
+ */
+export function computeHeartWidth(heartMesh: Mesh | undefined): number {
+  if (!heartMesh) return 0;
+  const size = new Box3().setFromObject(heartMesh).getSize(new Vector3());
+  return size.x;
+}
+
 /** ガイディングカテーテルの半径を、対象血管のオスティウム半径に対してどの比率にするか(血管と同程度〜やや太い、という仕様)。 */
 export const CATHETER_RADIUS_RATIO = 1.0;
 /**

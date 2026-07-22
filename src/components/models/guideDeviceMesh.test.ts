@@ -1,27 +1,51 @@
 import { describe, expect, it } from "vitest";
-import { Mesh, SphereGeometry, Vector3 } from "three";
-import { distanceFromAxis, evaluateAorticRootRadius, projectOntoFrame } from "./aorticRootMesh";
+import { Box3, Mesh, SphereGeometry, Vector3 } from "three";
+import {
+  ARCH_TRUNK_T_FRACTION,
+  computeAorticRootFrame,
+  distanceFromAxis,
+  evaluateAorticArchRadius,
+  evaluateAorticRootRadius,
+  evaluateAorticSubclavianRadius,
+  projectOntoFrame,
+  sampleAorticArchTrunk,
+  sampleAorticDescendingBranch,
+  sampleAorticSubclavianBranch,
+} from "./aorticRootMesh";
 import type { AorticRootFrame } from "./aorticRootMesh";
 import {
   buildBranchPathPoints,
   buildGuideCatheterGeometry,
   buildGuideWireGeometry,
+  buildWireCenterline,
   computeGuideCatheterPath,
   getAncestryChain,
 } from "./guideDeviceMesh";
+import { getMainTrunk, getVesselGraph } from "./vesselGraph";
 import type { CenterlineBranch, VesselGraph } from "./vesselGraph";
 import type { CenterlinePoint } from "./vesselCenterline";
+import type { VesselId } from "../../types/anatomy";
 
 /** テスト用の大動脈基部フレームを組み立てる(computeAorticRootFrameが実データから逆算する
  * ものと同じ形。個々のテストで角度・半径・中心だけを差し替えられるようにする)。 */
 function makeAorticRootFrame(overrides: Partial<AorticRootFrame> = {}): AorticRootFrame {
+  const sinusRadius = overrides.sinusRadius ?? 1;
   return {
     center: new Vector3(0, 0, 0),
     axis: new Vector3(0, 1, 0),
-    sinusRadius: 1,
+    sinusRadius,
+    // Preserve the old sinusRadius-derived scale by default so existing tests (written
+    // before the heartWidth-derived ascending/arch/descending taper existed) keep behaving
+    // the same unless a test explicitly overrides this to exercise the new tapering.
+    ascendingRadius: sinusRadius * (1.15 / 1.35),
     rcaAngle: 0,
     leftAngle: (Math.PI * 2) / 3,
     nonCoronaryAngle: (-Math.PI * 2) / 3,
+    // Preserve the old "uniform lobe bulge" behavior by default unless a test explicitly
+    // overrides these to exercise the per-ostium dynamic lobe reach.
+    rcaLobeAmplitudeScale: 1,
+    leftLobeAmplitudeScale: 1,
+    nonCoronaryLobeAmplitudeScale: 1,
     ...overrides,
   };
 }
@@ -275,6 +299,112 @@ describe("computeGuideCatheterPath / buildGuideCatheterGeometry", () => {
     expect(rcaFloorDist).toBeLessThanOrEqual(evaluateAorticRootRadius(frame, rcaFloor));
     expect(ladFloorDist).toBeLessThanOrEqual(evaluateAorticRootRadius(frame, ladFloor));
   });
+
+  it("dense path stays continuous (no large jumps) for both access routes when a frame is present -- regression for the femoral-route discontinuity bug", () => {
+    // Previously, entryPoints (heartScale-based, e.g. descendingEnd/descendingStart for the
+    // femoral route) and aortaPoint (ascendingEnd) were combined with the sinus J-curve into a
+    // single CatmullRomCurve3, then the WHOLE dense-sampled path was checked against the
+    // aortic root's containment bound. Because entryPoints/aortaPoint span a huge up-relative
+    // range (e.g. femoral's descendingEnd to descendingStart goes from a deeply negative to a
+    // deeply positive up-relative value), the curve was mathematically guaranteed (by the
+    // intermediate value theorem) to pass through the containment-checked height range
+    // transiently while still far from the axis -- and the correction snapped just that one
+    // crossing back near the axis, creating a large jump to/from its untouched neighbors
+    // (rendered in the app as a disconnected, floating horizontal fragment). The fix splits
+    // the curve into an outer (entry->ascendingEnd) and inner (ascendingEnd->ostium) segment
+    // and only applies the containment check to the inner one. Guard against a regression by
+    // checking no two consecutive dense points are farther apart than a small multiple of the
+    // path's own average point spacing.
+    // Use a realistic heartScale-to-sinusRadius ratio (heartScale notably larger than the
+    // aortic root's own caliber, matching real data ~2.47 vs ~0.6) -- the bug's mechanism
+    // specifically depends on the arch/descending entry offsets (heartScale-relative) being
+    // much larger than the sinus lumen offsets (sinusRadius-relative).
+    const realisticHeartScale = 2.5;
+    const frame = makeAorticRootFrame({ center: new Vector3(5, 5, 5), rcaAngle: 0, leftAngle: Math.PI / 2, sinusRadius: 0.6 });
+    for (const accessRoute of ["radial", "femoral"] as const) {
+      const path = computeGuideCatheterPath(graph, heartCentroid, realisticHeartScale, "RCA", accessRoute, frame, null)!;
+      const pts = path.fullSplinePoints;
+      let maxGap = 0;
+      let totalGap = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const gap = pts[i - 1].distanceTo(pts[i]);
+        totalGap += gap;
+        maxGap = Math.max(maxGap, gap);
+      }
+      const avgGap = totalGap / (pts.length - 1);
+      expect(maxGap, `${accessRoute}: max gap between consecutive points should not hugely exceed the average`).toBeLessThan(
+        avgGap * 5,
+      );
+    }
+  });
+
+  it("outer path (entry -> ascending aorta) stays within the visualized aortic arch/descending-aorta/subclavian-branch tube -- regression for the radial-route divergence bug", () => {
+    // Previously, the catheter's outer path (entry -> ascendingEnd) was built by fitting an
+    // independent CatmullRomCurve3 through control points (e.g. [subclavianEnd, archApex,
+    // ascendingEnd] for radial), while the VISUALIZED arch tube (buildAorticArchGeometry) was
+    // built from a *different* CatmullRomCurve3 through [ascendingEnd, archApex,
+    // descendingStart, descendingEnd]. For the femoral route these happened to be the exact
+    // same 4 control points in reverse order (Catmull-Rom is symmetric under full reversal, so
+    // there was no real divergence there), but for radial the control point sets differ --
+    // descendingStart is swapped for subclavianEnd as the tangent-defining neighbor at
+    // archApex, which measurably pulled the shared ascendingEnd->archApex segment up to ~1.34
+    // units off the visualized tube (whose local radius there is only ~0.5) in a synthetic
+    // reproduction -- i.e. the catheter shot off toward the arm instead of following the arch's
+    // curve. The fix makes both the catheter path and the visualized tube sample from the exact
+    // same underlying curve (aorticRootMesh.ts's sampleAorticArchTrunk/
+    // sampleAorticDescendingBranch/sampleAorticSubclavianBranch), which this test verifies
+    // numerically by rebuilding the ground-truth centerline independently and checking every
+    // dense path point in the arch region against its local tube radius.
+    const realisticHeartScale = 2.5;
+    const frame = makeAorticRootFrame({ center: new Vector3(5, 5, 5), rcaAngle: 0, leftAngle: Math.PI / 2, sinusRadius: 0.6 });
+
+    for (const accessRoute of ["radial", "femoral"] as const) {
+      const path = computeGuideCatheterPath(graph, heartCentroid, realisticHeartScale, "RCA", accessRoute, frame, null)!;
+
+      const sampleN = 200;
+      const trunkPts = sampleAorticArchTrunk(frame, realisticHeartScale, sampleN);
+      const trunkRadii = trunkPts.map((_, i) => evaluateAorticArchRadius(frame, (i / sampleN) * ARCH_TRUNK_T_FRACTION));
+      let branchPts: Vector3[];
+      let branchRadii: number[];
+      if (accessRoute === "femoral") {
+        branchPts = sampleAorticDescendingBranch(frame, realisticHeartScale, sampleN);
+        branchRadii = branchPts.map((_, i) =>
+          evaluateAorticArchRadius(frame, ARCH_TRUNK_T_FRACTION + (i / sampleN) * (1 - ARCH_TRUNK_T_FRACTION)),
+        );
+      } else {
+        branchPts = sampleAorticSubclavianBranch(frame, realisticHeartScale, sampleN);
+        branchRadii = branchPts.map((_, i) => evaluateAorticSubclavianRadius(frame, i / sampleN));
+      }
+      const centerline = [...trunkPts, ...branchPts.slice(1)];
+      const centerlineRadii = [...trunkRadii, ...branchRadii.slice(1)];
+
+      // Only check points clearly in the arch/descending/subclavian region (well beyond the
+      // ascending aorta's own up-relative range, whose end is at 4.5) -- the sinus J-curve/root
+      // region is covered by a separate test (numerically verifies the aortic segment...).
+      let worstRatio = 0;
+      let checkedAny = false;
+      for (const p of path.fullSplinePoints) {
+        const { upRelative } = projectOntoFrame(frame, p);
+        if (upRelative < 4.0) continue;
+        checkedAny = true;
+        let bestDist = Infinity;
+        let bestRadius = 0;
+        for (let i = 0; i < centerline.length; i++) {
+          const d = p.distanceTo(centerline[i]);
+          if (d < bestDist) {
+            bestDist = d;
+            bestRadius = centerlineRadii[i];
+          }
+        }
+        const ratio = bestDist / bestRadius;
+        if (ratio > worstRatio) worstRatio = ratio;
+      }
+      expect(checkedAny, `${accessRoute}: should have found points in the arch region to check`).toBe(true);
+      expect(worstRatio, `${accessRoute}: outer path should stay within the visualized aortic tube's local radius`).toBeLessThan(
+        1.01,
+      );
+    }
+  });
 });
 
 describe("computeGuideCatheterPath with a real heart mesh (piercing avoidance)", () => {
@@ -484,4 +614,93 @@ describe("buildGuideWireGeometry", () => {
     }
     expect(maxAbsX).toBeLessThan(wireRadius * 3);
   });
+});
+
+describe("anatomical validity across all vessel x access-route combinations (real ostium data)", () => {
+  // Real RCA/LAD/LCX centerline data (src/data/centerlines.json), not synthetic fixtures --
+  // regression coverage for a reported bug where the radial+LAD/LCX catheter appeared to swing
+  // out into empty space instead of engaging the ostium, with the wire then jumping back to
+  // enter the vessel from a disconnected point. Investigation found the underlying tip/wire
+  // math was already exact (both derive from the same getMainTrunk(graph).points[0].position);
+  // the reproduction turned out to be a UI issue (two identically-labeled "対象血管" selects --
+  // the object-placement panel's and the guide-device panel's -- easy to confuse), now
+  // disambiguated in GuideDeviceControls.tsx/ObjectPanel.tsx. These tests lock in the
+  // underlying geometric guarantees the user asked for, independent of that UI fix.
+  const rcaGraph = getVesselGraph("RCA");
+  const ladGraph = getVesselGraph("LAD");
+  const lcxGraph = getVesselGraph("LCX");
+  const graphs = new Map<VesselId, VesselGraph>([
+    ["RCA", rcaGraph],
+    ["LAD", ladGraph],
+    ["LCX", lcxGraph],
+  ]);
+  const graphByVessel: Record<VesselId, VesselGraph> = { RCA: rcaGraph, LAD: ladGraph, LCX: lcxGraph };
+
+  // heartCentroid/heartScale approximated from the real vessel branch points themselves
+  // (the true production values come from the loaded heart-realistic.glb's bounding box, which
+  // requires a browser/GLTF load; this approximation was verified during investigation to
+  // produce a frame and catheter path geometrically equivalent to the real GLB-derived one --
+  // same tip-endpoint distances (~1e-16) and same monotonicity profile).
+  const box = new Box3();
+  for (const g of [rcaGraph, ladGraph, lcxGraph]) {
+    for (const b of g.branches) for (const p of b.points) box.expandByPoint(p.position);
+  }
+  const heartCentroid = box.getCenter(new Vector3());
+  const heartScale = 2.5; // documented realistic heartScale/sinusRadius ratio, used elsewhere in this file
+
+  const frame = computeAorticRootFrame(heartCentroid, graphs);
+
+  const vesselIds: VesselId[] = ["RCA", "LAD", "LCX"];
+  const accessRoutes = ["femoral", "radial"] as const;
+
+  it("computed a real aortic root frame from the real ostium data (sanity check for the tests below)", () => {
+    expect(frame).not.toBeNull();
+  });
+
+  for (const vesselId of vesselIds) {
+    for (const accessRoute of accessRoutes) {
+      it(`${vesselId}/${accessRoute}: catheter tip == ostium, wire start == catheter tip, path is monotonic toward the ostium`, () => {
+        const graph = graphByVessel[vesselId];
+        const ostium = getMainTrunk(graph).points[0].position;
+        const path = computeGuideCatheterPath(graph, heartCentroid, heartScale, vesselId, accessRoute, frame, null);
+        expect(path).not.toBeNull();
+        if (!path) return;
+
+        // Requirement 1: the catheter's actual rendered endpoint (last densely-sampled point,
+        // after all spline construction and correction passes) must coincide with the ostium --
+        // not just the trivial tipPosition/ostiumPosition clone identity, but the point that is
+        // actually drawn.
+        const tipEndpoint = path.fullSplinePoints[path.fullSplinePoints.length - 1];
+        expect(tipEndpoint.distanceTo(ostium), `${vesselId}/${accessRoute}: rendered tip must reach the ostium`).toBeLessThan(
+          1e-6,
+        );
+
+        // Requirement 2: the wire's own starting point (independently derived from the vessel
+        // graph's main-trunk t=0) must coincide with the catheter's placement tip.
+        const wireStart = buildWireCenterline(graph, graph.branches[0].id).points[0];
+        expect(
+          wireStart.distanceTo(path.placement.tipPosition),
+          `${vesselId}/${accessRoute}: wire start must connect exactly to the catheter tip`,
+        ).toBeLessThan(1e-6);
+
+        // Requirement 3: the path must progress toward the ostium without a large reversal.
+        // The J-curve's contralateral-wall backup (Judkins engagement technique) causes a
+        // small, expected, bounded uptick right before the final hook into the ostium -- verified
+        // during investigation to be well under 15% of heartScale for every combination using
+        // real data; anything larger indicates a genuine "overshoot and come back" defect.
+        const points = path.fullSplinePoints;
+        let worstIncrease = 0;
+        let prevDist = points[0].distanceTo(ostium);
+        for (let i = 1; i < points.length; i++) {
+          const dist = points[i].distanceTo(ostium);
+          worstIncrease = Math.max(worstIncrease, dist - prevDist);
+          prevDist = dist;
+        }
+        expect(
+          worstIncrease,
+          `${vesselId}/${accessRoute}: path must not backtrack away from the ostium beyond the expected J-curve backup`,
+        ).toBeLessThan(heartScale * 0.15);
+      });
+    }
+  }
 });

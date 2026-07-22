@@ -15,6 +15,7 @@ import {
   CATHETER_RADIUS_RATIO,
   WIRE_RADIUS_RATIO,
   computeHeartScale,
+  computeHeartWidth,
   useGuideCatheterGeometry,
   useGuideCatheterPath,
   useGuideWireGeometry,
@@ -175,13 +176,16 @@ export function CineAnatomyModel() {
   // GuideDeviceMeshes.tsxと同じ純粋関数・フックを再利用する)。配置情報(placement)の
   // storeへの書き戻しはメインビュー側だけが行う(シネビューは読み取り専用の描画のみ)。
   const heartScale = useMemo(() => computeHeartScale(built.meshesByName.get("HEART")), [built]);
+  // メインビュー(ModelLoader.tsx)と同じ太さの大動脈基部フレームになるよう、こちらも
+  // heartWidthを渡す(AorticRootFrame.ascendingRadius参照)。
+  const heartWidth = useMemo(() => computeHeartWidth(built.meshesByName.get("HEART")), [built]);
   const guideGraph = built.graphs.get(guideDevice.targetVesselId);
   // 冠動脈入口部の実位置から逆算した大動脈基部フレーム(aorticRootMesh.ts)。
   // カテーテルが対側壁に当ててからエンゲージする経路(computeGuideCatheterPath参照)の
   // 基準に使う。
   const guideAorticRootFrame = useMemo(
-    () => computeAorticRootFrame(heartCentroid, built.graphs),
-    [heartCentroid, built],
+    () => computeAorticRootFrame(heartCentroid, built.graphs, heartWidth),
+    [heartCentroid, built, heartWidth],
   );
   const catheterPath = useGuideCatheterPath(
     guideGraph,

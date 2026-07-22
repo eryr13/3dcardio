@@ -205,7 +205,7 @@ export function ObjectPanel() {
           </select>
         </label>
         <label className="object-form-row">
-          対象血管
+          追加先の血管
           <select value={vesselId} onChange={(e) => handleVesselChange(e.target.value as VesselId)}>
             {VESSEL_IDS.map((id) => (
               <option key={id} value={id}>

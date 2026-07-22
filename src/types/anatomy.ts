@@ -46,6 +46,20 @@ export interface AorticRootState extends AnatomyDisplayState {
   name: string;
 }
 
+export type ValveId = "AORTIC" | "PULMONARY" | "MITRAL" | "TRICUSPID";
+
+/**
+ * 4つの弁(大動脈弁・肺動脈弁・僧帽弁・三尖弁)の表示状態。心臓モデルには弁の
+ * ラベル情報が含まれていないため、実セグメンテーションではなく、冠動脈入口部から
+ * 逆算した大動脈基部の位置を起点に、解剖学的な位置関係から推定して配置する
+ * (heartValveMesh.ts参照)。大動脈基部が接続すべき位置(大動脈弁の直上)を
+ * 視覚的に確認しやすくするための補助表示。
+ */
+export interface ValveState extends AnatomyDisplayState {
+  id: ValveId;
+  name: string;
+}
+
 /** モデルの供給元。今回は placeholder のみ実装し、将来 gltf を追加する */
 export type ModelSource =
   | { type: "placeholder" }

@@ -1,6 +1,7 @@
 import { ViewControls } from "./ViewControls";
 import { ClippingControls } from "./ClippingControls";
 import { AnatomyLegend } from "./AnatomyLegend";
+import { ValveLegend } from "./ValveLegend";
 import { ObjectPanel } from "./ObjectPanel";
 import { CineControls } from "./CineControls";
 import { ContrastControls } from "./ContrastControls";
@@ -17,6 +18,7 @@ export function SidePanel() {
       <ViewControls />
       <ClippingControls />
       <AnatomyLegend />
+      <ValveLegend />
       <ObjectPanel />
       <CineControls />
       <ContrastControls />
