@@ -6,11 +6,10 @@ import type { VesselId } from "../../types/anatomy";
 import { useCardioStore } from "../../store/useCardioStore";
 import {
   MEASURED_LEFT_MAIN_OSTIUM,
-  buildAorticArchGeometry,
-  buildAorticRootGeometry,
   buildBrachiocephalicBranchGeometry,
   buildLeftCommonCarotidBranchGeometry,
   buildLeftSubclavianBranchGeometry,
+  buildSeamlessAorticGeometry,
   computeAorticRootFrame,
 } from "./aorticRootMesh";
 import type { DetectedAorticOpening } from "./heartAorticOpening";
@@ -57,22 +56,20 @@ export function AorticRootOverlay({
 }: AorticRootOverlayProps) {
   const display = useCardioStore((s) => s.aorticRoot);
 
+  // 大動脈基部(バルサルバ洞)・上行大動脈・弓部・下行大動脈は、継ぎ目で頂点を溶接した
+  // 単一の連続したジオメトリとして構築する(buildSeamlessAorticGeometry参照——別々の
+  // ジオメトリのままだと各々がcomputeVertexNormals()を個別に呼ぶため、位置がぴったり
+  // 一致していても継ぎ目にシェーディングの段差が残っていた)。
   const rootGeometry = useMemo(
-    () => buildAorticRootGeometry(heartCentroid, graphs, heartWidth, detectedAorticOpening),
-    [heartCentroid, graphs, heartWidth, detectedAorticOpening],
+    () => buildSeamlessAorticGeometry(heartCentroid, graphs, heartWidth, detectedAorticOpening, heartScale),
+    [heartCentroid, graphs, heartWidth, detectedAorticOpening, heartScale],
   );
 
-  // 弓部・鎖骨下動脈相当の分岐はどちらも同じフレームから作るため、一度だけ計算して使い回す
-  // (buildAorticRootGeometry自身は内部で別途computeAorticRootFrameを呼ぶが、公開APIの
-  // 引数を変えるほどではないためそちらはそのままにしておく)。
+  // 3分枝(腕頭動脈・左総頸動脈・左鎖骨下動脈)はどれも弓部と同じフレームから作るため、
+  // 一度だけ計算して使い回す。
   const frame = useMemo(
     () => computeAorticRootFrame(heartCentroid, graphs, heartWidth, detectedAorticOpening),
     [heartCentroid, graphs, heartWidth, detectedAorticOpening],
-  );
-
-  const archGeometry = useMemo(
-    () => (frame ? buildAorticArchGeometry(frame, heartScale) : null),
-    [frame, heartScale],
   );
 
   const brachiocephalicGeometry = useMemo(
@@ -94,7 +91,21 @@ export function AorticRootOverlay({
         color: display.color,
         transparent: display.opacity < 1,
         opacity: display.opacity,
-        depthWrite: display.opacity >= 1,
+        // 他の半透明メッシュと同じ「不透明度<1ならdepthWriteをオフにする」パターンを
+        // 踏襲すると、心臓メッシュ(既定不透明度90%)・大動脈基部メッシュ(既定45%)は
+        // どちらも半透明の透過ソート対象になる。three.jsの透過オブジェクトのソートは
+        // オブジェクト単位(1つの代表点からカメラまでの距離)でしか行われないため、
+        // 心臓の全表面を覆う大きなメッシュと、心臓の周りを長く回り込む大動脈基部
+        // ・弓部・下行大動脈の1本の連続したメッシュ(buildSeamlessAorticGeometry)
+        // という、互いに複雑に入り組んで重なる2つの大きな半透明メッシュの前後関係を
+        // 単一の距離値では正しく決められず、画角によって「大動脈が心臓の上に乗っている
+        // ように見える」「心臓が大動脈の上に乗っているように見える」の両方が起こって
+        // いた(HeartPerfusionOverlay.tsxで発見・修正した「視点によって奥/手前が
+        // 入れ替わって見える」不具合と同種——あちらは1メッシュの表裏面同士だったが、
+        // こちらは2つの別メッシュ同士で起きている)。depthWriteを常にtrueにして
+        // 深度テストを効かせることで、少なくとも大動脈基部メッシュ自身は常に正しい
+        // 深度を書き込み、描画順に関わらず心臓側との前後関係が安定するようにする。
+        depthWrite: true,
         roughness: 0.5,
         metalness: 0.05,
         // 洞の三つ葉断面ローフト(aorticRootMesh.ts)は巻き順を厳密に保証していないため、
@@ -111,7 +122,6 @@ export function AorticRootOverlay({
   return (
     <>
       <mesh geometry={rootGeometry} material={material} />
-      {archGeometry && <mesh geometry={archGeometry} material={material} />}
       {brachiocephalicGeometry && <mesh geometry={brachiocephalicGeometry} material={material} />}
       {leftCommonCarotidGeometry && <mesh geometry={leftCommonCarotidGeometry} material={material} />}
       {leftSubclavianGeometry && <mesh geometry={leftSubclavianGeometry} material={material} />}

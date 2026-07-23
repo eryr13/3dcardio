@@ -560,8 +560,16 @@ function applyDisplayState(mesh: Mesh | undefined, state: AnatomyDisplayState) {
   material.color.set(state.color);
   material.transparent = state.opacity < 1;
   material.opacity = state.opacity;
-  // 半透明時は他の半透明メッシュとの深度書き込み競合を避ける(標準的な透明描画の作法)。
-  material.depthWrite = state.opacity >= 1;
+  // 以前は「半透明時(opacity<1)はdepthWriteをオフにする」という、他の半透明メッシュ
+  // との書き込み競合を避けるための標準的な作法に従っていた。しかしHeart(既定不透明度
+  // 90%)とAorticRootOverlay(既定45%)のように、互いに複雑に入り組んで重なる複数の
+  // 大きな半透明メッシュが同時に存在する場合、three.jsの透過オブジェクトのソートは
+  // オブジェクト単位(1つの代表点からカメラまでの距離)でしか行われないため、画角に
+  // よって「大動脈が心臓の上に乗っている」「心臓が大動脈の上に乗っている」の両方が
+  // 起こる不具合として現れた(HeartPerfusionOverlay.tsxで先に見つかった「視点によって
+  // 奥/手前が入れ替わって見える」不具合と同種)。depthWriteを常にtrueにして深度テストを
+  // 効かせることで、描画順に関わらず前後関係が安定するようにする。
+  material.depthWrite = true;
   // GLTFLoader 由来のマテリアルは transparent/opacity をランタイムで変更しても
   // needsUpdate を明示しないと再描画に反映されないため必須。
   material.needsUpdate = true;

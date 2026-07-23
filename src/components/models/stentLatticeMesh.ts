@@ -87,13 +87,27 @@ function buildInitialNormal(tangent: Vector3): Vector3 {
 
 /**
  * 各点のtangentから、回転最小化フレーム(Rotation-Minimizing Frame)のnormal列を作る。
- * 最初の点だけ任意基準ベクトルからnormalを作り、以降は「前点のtangentから今回の
+ * 最初の点は、seedNormal(指定があれば)をtangentに対して直交化したものを使い、
+ * 無ければ任意基準ベクトルからnormalを作る。以降は「前点のtangentから今回の
  * tangentへの最小回転」を前点のnormalに適用して伝播させる。基準ベクトルを毎回
  * 選び直す方式だと、tangent.yが0.9を跨ぐ等で不連続に反転し隣接リングがねじれる
  * 不具合があったため、この方式を採用している(実機検証で確認済み)。
+ *
+ * seedNormalは、このチューブが別の(独立に生成された)チューブの終端に接続される
+ * 場合に使う——各チューブがそれぞれ任意の基準ベクトルから断面の向きを決めると、
+ * 位置・半径・接線がぴったり一致していても、断面の回転(頂点の周方向の並び)が
+ * 食い違い、継ぎ目でねじれた段差に見える不具合があった(実測: 大動脈基部チューブと
+ * 弓部チューブの継ぎ目で頂点0の向きが90°食い違っていたことを確認)。呼び出し側が
+ * 相手のチューブの断面基準ベクトルをそのままseedNormalとして渡すことで、継ぎ目の
+ * 断面の向きを一致させ、ねじれの無い滑らかな接続にする。
  */
-function propagateNormals(tangents: Vector3[]): Vector3[] {
-  const normals: Vector3[] = [buildInitialNormal(tangents[0])];
+function propagateNormals(tangents: Vector3[], seedNormal?: Vector3): Vector3[] {
+  const initialNormal = seedNormal
+    ? seedNormal.clone().addScaledVector(tangents[0], -seedNormal.dot(tangents[0])).normalize()
+    : buildInitialNormal(tangents[0]);
+  const normals: Vector3[] = [
+    initialNormal.lengthSq() > 1e-6 ? initialNormal : buildInitialNormal(tangents[0]),
+  ];
   const axis = new Vector3();
   for (let i = 1; i < tangents.length; i++) {
     const prevTangent = tangents[i - 1];
@@ -123,10 +137,26 @@ function propagateNormals(tangents: Vector3[]): Vector3[] {
 export function computeTubeFrame(
   rawPoints: Vector3[],
   smoothingPasses = 24,
+  /** propagateNormals参照。別のチューブの終端へ断面の向きを合わせて接続したい場合に、
+   * 相手側の断面基準ベクトルを渡す。 */
+  seedNormal?: Vector3,
+  /**
+   * 指定すると、始点のtangent(本来はcomputeTangentsが隣接点から実測する値)をこれで
+   * 上書きする。別の(独立に生成された)チューブの終端に接続する場合、実測tangentは
+   * 相手側チューブの軸方向と数十度ずれることがあり(2つの中心線が継ぎ目で滑らかに
+   * 一致していても、離散サンプル点から求めた接線同士は必ずしも一致しない)、これを
+   * そのままseedNormalの直交化に使うと、seedNormalが実測tangentに対して直交化される
+   * 過程でわずかに回転してしまい、相手側の断面と厳密には一致しない(実測で数十度の
+   * ずれを確認)。相手側チューブの軸方向をそのままseedTangentとして渡すことで、
+   * seedNormalの直交化が相手側の断面基準ベクトルを一切回転させず、継ぎ目の断面が
+   * 厳密に一致する(頂点位置が浮動小数点誤差の範囲でぴったり重なる)ようになる。
+   */
+  seedTangent?: Vector3,
 ): { points: Vector3[]; tangents: Vector3[]; normals: Vector3[] } {
   const points = smoothPoints(rawPoints, smoothingPasses);
   const tangents = computeTangents(points);
-  const normals = propagateNormals(tangents);
+  if (seedTangent) tangents[0] = seedTangent.clone().normalize();
+  const normals = propagateNormals(tangents, seedNormal);
   return { points, tangents, normals };
 }
 
@@ -164,8 +194,14 @@ export function buildTubeFromPoints(
    * 色を焼き込むのに使う、contrastFillMesh.ts参照)。
    */
   pointColors?: Color[],
+  /** computeTubeFrame参照。別のチューブの終端へ断面の向きを合わせて接続したい場合に、
+   * 相手側の断面基準ベクトルを渡す。 */
+  seedNormal?: Vector3,
+  /** computeTubeFrame参照。別のチューブの終端へ厳密に(浮動小数点誤差の範囲で)一致
+   * する断面を作りたい場合に、相手側チューブの軸方向を渡す。 */
+  seedTangent?: Vector3,
 ): BufferGeometry {
-  const { points, tangents, normals } = computeTubeFrame(rawPoints, smoothingPasses);
+  const { points, tangents, normals } = computeTubeFrame(rawPoints, smoothingPasses, seedNormal, seedTangent);
   return buildTubeFromFrame(points, tangents, normals, radii, radialSegments, pointScalars, pointColors);
 }
 

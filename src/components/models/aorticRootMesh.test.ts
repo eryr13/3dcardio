@@ -17,6 +17,7 @@ import {
   buildBrachiocephalicBranchGeometry,
   buildLeftCommonCarotidBranchGeometry,
   buildLeftSubclavianBranchGeometry,
+  buildSeamlessAorticGeometry,
   computeAorticArchControlPoints,
   computeAorticRootFrame,
   computeCrossSectionBasis,
@@ -230,6 +231,85 @@ describe("buildAorticArchGeometry", () => {
     }
     const expectedFirstRingRadius = 1.15 * (frame.sinusRadius / 1.35);
     expect(minDist).toBeLessThan(expectedFirstRingRadius * 1.3);
+  });
+
+  it("the tube's first ring is rotationally aligned with the ascending root tube's own cross-section basis (regression: no 90-degree twist at the seam)", () => {
+    // The ascending-root tube (buildLobedTubeGeometry, a separate BufferGeometry from this arch
+    // tube) places its own last ring's vertex 0 at frame.center + u*radius, where u comes from
+    // computeCrossSectionBasis(frame.axis). buildAorticArchGeometry used to let
+    // buildTubeFromPoints pick an arbitrary starting cross-section orientation (buildInitialNormal)
+    // completely unrelated to u -- position/radius/tangent matched at the seam, but the ring's
+    // vertices were rotated up to 90 degrees relative to the root tube's ring, producing a visible
+    // twist/kink exactly where the two independently-built meshes meet (reported as looking like
+    // "two separate disconnected regions"). Fixed by seeding buildTubeFromPoints with
+    // seedNormal=-u so its first ring's vertex 0 lines up with the root tube's own u direction.
+    //
+    // A follow-up fix also seeds buildTubeFromPoints with seedTangent=frame.axis, so the
+    // orthogonalization of seedNormal happens against frame.axis (which u/v are already exactly
+    // orthogonal to) instead of against the arch curve's own measured first-segment tangent
+    // (which differs from frame.axis by ~20 degrees, since the very first segment already heads
+    // toward archApex's large lateral offset). Without seedTangent, that orthogonalization step
+    // itself rotated u/v by a residual ~20 degrees; with it, the alignment is exact (bounded only
+    // by floating point error), which is required for buildSeamlessAorticGeometry's vertex weld
+    // (see its own describe block) to find the boundary ring's positions truly coincident.
+    const heartScale = 2.5;
+    const geometry = buildAorticArchGeometry(frame, heartScale);
+    const pos = geometry.attributes.position as BufferAttribute;
+    const radialSegments = 32; // RADIAL_SEGMENTS in aorticRootMesh.ts
+    const verticesPerRing = radialSegments + 1;
+    const firstRingCenter = new Vector3();
+    for (let j = 0; j < verticesPerRing; j++) {
+      firstRingCenter.add(new Vector3(pos.getX(j), pos.getY(j), pos.getZ(j)));
+    }
+    firstRingCenter.multiplyScalar(1 / verticesPerRing);
+    const archVertex0Direction = new Vector3(pos.getX(0), pos.getY(0), pos.getZ(0)).sub(firstRingCenter).normalize();
+
+    const { u } = computeCrossSectionBasis(frame.axis);
+    const angleDeg = (Math.acos(Math.min(1, Math.max(-1, archVertex0Direction.dot(u)))) * 180) / Math.PI;
+    expect(
+      angleDeg,
+      `arch tube's first-ring vertex-0 direction is ${angleDeg.toFixed(1)}deg away from the root tube's own u direction -- should be exactly aligned (seedTangent), not just roughly`,
+    ).toBeLessThan(1);
+  });
+});
+
+describe("buildSeamlessAorticGeometry (real heart-realistic.glb ostium data)", () => {
+  // buildAorticRootGeometry and buildAorticArchGeometry each call computeVertexNormals() on
+  // their own BufferGeometry, which only averages normals across vertices that share the same
+  // *index* within that one geometry -- not across two different geometries' vertices that
+  // merely sit at the same position. So even after position/rotation alignment at the seam (see
+  // the "rotationally aligned" test above), rendering the two tubes as separate meshes left a
+  // visible shading discontinuity exactly at the boundary (reported: "different objects that
+  // appear cut off ... displayed as a continuous structure" is what's wanted).
+  // buildSeamlessAorticGeometry merges the two tubes' position-only data, welds coincident
+  // vertices (mergeVertices), and calls computeVertexNormals() once on the combined result.
+  it("welds the ascending-root/arch boundary ring into a single set of shared vertices, dropping at least one ring's worth of duplicate vertices vs the naive sum", async () => {
+    const heartMesh = await loadRealHeartMesh();
+    heartMesh.updateMatrixWorld(true);
+    const box = new Box3().setFromObject(heartMesh);
+    const heartCentroid = box.getCenter(new Vector3());
+    const heartWidth = box.getSize(new Vector3()).x;
+    const heartScale = box.getSize(new Vector3()).length() / 2;
+
+    const graphs = new Map<VesselId, VesselGraph>([
+      ["RCA", getVesselGraph("RCA")],
+      ["LAD", getVesselGraph("LAD")],
+      ["LCX", getVesselGraph("LCX")],
+    ]);
+
+    const rootGeometry = buildAorticRootGeometry(heartCentroid, graphs, heartWidth, null);
+    const frame = computeAorticRootFrame(heartCentroid, graphs, heartWidth, null);
+    expect(rootGeometry).not.toBeNull();
+    expect(frame).not.toBeNull();
+    if (!rootGeometry || !frame) return;
+    const archGeometry = buildAorticArchGeometry(frame, heartScale);
+    const naiveSum = rootGeometry.attributes.position.count + archGeometry.attributes.position.count;
+
+    const seamless = buildSeamlessAorticGeometry(heartCentroid, graphs, heartWidth, null, heartScale);
+    expect(seamless).not.toBeNull();
+    if (!seamless) return;
+    const radialSegments = 32; // RADIAL_SEGMENTS in aorticRootMesh.ts
+    expect(seamless.attributes.position.count).toBeLessThanOrEqual(naiveSum - radialSegments);
   });
 });
 

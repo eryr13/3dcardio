@@ -16,6 +16,7 @@
 // 大動脈基部の内腔を通って対側壁に当たってからエンゲージする経路を組み立てる)。
 
 import { BufferAttribute, BufferGeometry, CatmullRomCurve3, Plane, Vector3 } from "three";
+import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import type { VesselId } from "../../types/anatomy";
 import type { DetectedAorticOpening } from "./heartAorticOpening";
 import { buildTubeFromPoints } from "./stentLatticeMesh";
@@ -1562,7 +1563,81 @@ export function buildAorticArchGeometry(frame: AorticRootFrame, heartScale: numb
     return ratio * scale;
   });
 
-  return buildTubeFromPoints(points, radii, RADIAL_SEGMENTS, 0);
+  // 上行大動脈チューブ(buildLobedTubeGeometry)の最後のリングは、frame.axisから求めた
+  // 断面基準(u, v)を使ってvertex 0をu方向に置く。buildTubeFromPointsは自前の回転最小化
+  // フレームを使い、既定では断面の向きを任意の基準ベクトルから決めてしまうため、これを
+  // seedNormalで上書きしないと、位置・半径・接線が継ぎ目でぴったり一致していても
+  // 断面の回転(頂点の周方向の並び)が食い違い、ねじれた段差に見える(実測: 頂点0の
+  // 向きが継ぎ目で90°食い違っていたことを確認)。buildTubeFromFrameの頂点0は
+  // -N方向(cos=-cos(0)=-1)になるため、u方向に一致させるにはseedNormal=-uを渡す。
+  //
+  // さらにseedTangentとしてframe.axisそのものを渡す。points[0](trunkPointsの先頭、
+  // ascendingEndそのもの)のtangentは、本来はcomputeTangentsがpoints[0]/points[1]から
+  // 実測するが、archApexへ向かう最初の区間は横方向に大きくオフセットしているため、
+  // 実測tangentはframe.axisから約20°ずれる(実測確認済み)。これをそのままseedNormalの
+  // 直交化に使うと、u自体が継ぎ目でわずかに回転してしまい、上行大動脈側の最後のリングと
+  // 厳密には重ならない。seedTangent=frame.axisを渡すことで、この直交化がframe.axisに
+  // 対して行われる(u,vは元々frame.axisに直交するよう構成されているため、直交化は
+  // 事実上no-opになる)ようにし、継ぎ目の断面(リング全体の頂点位置)が上行大動脈側と
+  // 浮動小数点誤差の範囲で厳密に一致するようにする——これにより、buildSeamlessAorticGeometry
+  // が2つのチューブを頂点溶接(mergeVertices)で単一メッシュに統合できる。
+  const { u: rootU } = computeCrossSectionBasis(frame.axis);
+  return buildTubeFromPoints(points, radii, RADIAL_SEGMENTS, 0, undefined, undefined, rootU.clone().negate(), frame.axis);
+}
+
+/** buildSeamlessAorticGeometryが上行大動脈側と弓部側の継ぎ目リングを頂点溶接する際の
+ * 許容誤差。seedTangent(frame.axis)により継ぎ目の頂点位置は理論上浮動小数点誤差の
+ * 範囲で一致するため、この値は「隣接リング間の間隔」よりは十分小さく、かつ
+ * 浮動小数点の丸め誤差(1e-6〜1e-5程度)よりは十分大きい値であればよい。 */
+const SEAM_WELD_TOLERANCE = 1e-4;
+
+/** 位置(position)属性以外(normal・uv等)を持たない、頂点溶接専用のジオメトリの複製を
+ * 作る。mergeVertices(three/addons)は全属性をまとめてハッシュ化して同一頂点かどうかを
+ * 判定するため、法線がまだ各チューブ内で別々に計算された(=継ぎ目で値が異なる)状態の
+ * まま渡すと、位置が厳密に一致していても法線の違いのせいで溶接されない。位置だけを
+ * 残して溶接し、統合後に改めてcomputeVertexNormals()を1回だけ呼ぶことで、継ぎ目を
+ * またぐ面同士が法線計算で互いに影響し合うようにする。 */
+function stripToPositionOnly(geometry: BufferGeometry): BufferGeometry {
+  const stripped = new BufferGeometry();
+  const index = geometry.getIndex();
+  if (index) stripped.setIndex(index);
+  stripped.setAttribute("position", geometry.getAttribute("position"));
+  return stripped;
+}
+
+/**
+ * 大動脈基部(バルサルバ洞)・上行大動脈(buildAorticRootGeometry)と、弓部・下行大動脈
+ * (buildAorticArchGeometry)を、継ぎ目で頂点を共有する単一の連続したBufferGeometryとして
+ * 構築する。
+ *
+ * 従来はこの2つを別々のBufferGeometryとして描画しており、buildAorticArchGeometryの
+ * seedNormal/seedTangentにより継ぎ目の位置・断面の向きを厳密に一致させても、
+ * 各ジオメトリが個別にcomputeVertexNormals()を呼ぶため(そちらは頂点位置ではなく
+ * 頂点インデックスごとに法線を平均する)、継ぎ目をまたぐ面同士が互いの法線計算に
+ * 影響せず、シェーディングの段差が残っていた(ユーザー報告により発覚——「上行大動脈と
+ * 弓部大動脈がシームレスにつながるようにしてほしい」)。
+ *
+ * この関数は、位置だけを残した2つのジオメトリをBufferGeometryUtils.mergeGeometriesで
+ * 連結し、mergeVerticesで継ぎ目の重複頂点を溶接してから、統合後のジオメトリに対して
+ * 1回だけcomputeVertexNormals()を呼ぶ。これにより、継ぎ目をまたぐ面同士が法線計算で
+ * 互いに影響し合い、真にシームレスな1枚のメッシュになる。
+ */
+export function buildSeamlessAorticGeometry(
+  heartCentroid: Vector3,
+  graphs: Map<VesselId, VesselGraph>,
+  heartWidth: number,
+  detectedOpening: DetectedAorticOpening | null | undefined,
+  heartScale: number,
+): BufferGeometry | null {
+  const frame = computeAorticRootFrame(heartCentroid, graphs, heartWidth, detectedOpening);
+  if (!frame) return null;
+  const rootGeometry = buildLobedTubeGeometry(frame, RADIAL_SEGMENTS, detectedOpening);
+  const archGeometry = buildAorticArchGeometry(frame, heartScale);
+  const merged = mergeGeometries([stripToPositionOnly(rootGeometry), stripToPositionOnly(archGeometry)]);
+  if (!merged) return rootGeometry;
+  const welded = mergeVertices(merged, SEAM_WELD_TOLERANCE);
+  welded.computeVertexNormals();
+  return welded;
 }
 
 /** 3分枝それぞれの経路サンプリング数。腕頭動脈はカテーテル経路の検証にも使うため
