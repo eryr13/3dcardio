@@ -19,16 +19,17 @@ import type { GuideAccessRoute } from "../../types/guideDevice";
 import { buildBranchLinks } from "../../utils/contrastFlow";
 import {
   ARCH_TRUNK_T_FRACTION,
+  BRACHIOCEPHALIC_ORIGIN_T_FRACTION,
   computeAorticArchControlPoints,
   distanceFromAxis,
   evaluateAorticArchRadius,
+  evaluateAorticBrachiocephalicRadius,
   evaluateAorticRootRadius,
-  evaluateAorticSubclavianRadius,
   pointAtRelativeHeight,
   projectOntoFrame,
   sampleAorticArchTrunk,
+  sampleAorticBrachiocephalicBranch,
   sampleAorticDescendingBranch,
-  sampleAorticSubclavianBranch,
 } from "./aorticRootMesh";
 import type { AorticRootFrame } from "./aorticRootMesh";
 import { buildTubeFromPoints } from "./stentLatticeMesh";
@@ -201,13 +202,13 @@ const AORTA_UP_FRACTION = 1.4;
 const AORTA_OUTWARD_FRACTION = 0.6;
 /**
  * 大動脈基部フレームが得られる場合、体外側の経路(aortaPoint・entryPoints)は
- * 実際に表示している弓部・下行大動脈・鎖骨下動脈相当の分岐(aorticRootMesh.tsの
+ * 実際に表示している弓部・下行大動脈・腕頭動脈(aorticRootMesh.tsの
  * computeAorticArchControlPoints、AorticRootOverlayが同じ点から可視化用チューブを
- * 作る)に沿わせる。橈骨アプローチは鎖骨下動脈相当の分岐の終端(subclavianEnd)、
- * 大腿アプローチは下行大動脈の終端(descendingEnd)を、そのまま体外側の穿刺部位と
- * する——「どこまで伸ばすか」を可視化ジオメトリ側と別々の定数で持つと、片方だけ
- * 調整したときに食い違って経路が血管の外に突き抜けて見える(過去に実際に起きた
- * 不具合)。必ずcomputeAorticArchControlPointsの値をそのまま使うこと。
+ * 作る)に沿わせる。橈骨アプローチ(右橈骨、腕頭動脈経由)は腕頭動脈の終端
+ * (brachiocephalicEnd)、大腿アプローチは下行大動脈の終端(descendingEnd)を、
+ * そのまま体外側の穿刺部位とする——「どこまで伸ばすか」を可視化ジオメトリ側と別々の
+ * 定数で持つと、片方だけ調整したときに食い違って経路が血管の外に突き抜けて見える
+ * (過去に実際に起きた不具合)。必ずcomputeAorticArchControlPointsの値をそのまま使うこと。
  *
  * 大動脈基部の内腔からはみ出さないことを検証・補正する対象とする高さの範囲
  * (AORTIC_ROOT_PROFILEのup相対値。この範囲外の点(体外側の経路など)は対象外)。
@@ -398,7 +399,7 @@ function ensurePathStaysInsideAorticRoot(
 
 /**
  * カテーテルの体外側経路(finalPoints先頭のcenterlinePoints.length個、entry〜aortaPoint=
- * 上行大動脈終端の区間)の全サンプル点について、大動脈弓・下行大動脈・鎖骨下動脈相当の
+ * 上行大動脈終端の区間)の全サンプル点について、大動脈弓・下行大動脈・腕頭動脈の
  * 中心線(centerlinePoints、buildCatheterApproachがaorticRootMesh.tsのsample*関数から
  * 直接取得したもの——finalPointsの対応点は、心筋干渉補正(ensurePathClearsHeartMesh)を
  * 経る前はcenterlinePointsそのものと一致する)までの距離を検証し、その位置の局所半径
@@ -407,7 +408,7 @@ function ensurePathStaysInsideAorticRoot(
  * その位置の大動脈の半径以内であることを数値で検証する」の実装。
  *
  * centerlinePoints自体は可視化ジオメトリ(buildAorticArchGeometry/
- * buildSubclavianBranchGeometry)と同一のsample関数から得た点であるため、心筋干渉補正で
+ * buildBrachiocephalicBranchGeometry)と同一のsample関数から得た点であるため、心筋干渉補正で
  * 動かされない限り違反は構造的に起こり得ない——この検証は、その保証が実際に保たれて
  * いること(心筋干渉補正がこの区間の点を誤って押し出していないこと)を実測で確認する
  * 安全網であり、将来の変更に対する回帰検出も兼ねる。
@@ -438,7 +439,7 @@ function verifyOuterPathWithinAorta(
     }
   }
   console.log(
-    `[guideDeviceMesh] 大動脈弓・下行大動脈/鎖骨下動脈内腔の検証(${shape}/${accessRoute}): ` +
+    `[guideDeviceMesh] 大動脈弓・下行大動脈/腕頭動脈内腔の検証(${shape}/${accessRoute}): ` +
       `経路上の最大到達率=${(worstRatio * 100).toFixed(1)}%(100%以内なら内腔に収まっている、` +
       `worst index=${worstIndex})`,
   );
@@ -593,16 +594,17 @@ function buildCatheterApproach(
     bulgePoint = floorPoint;
     lumenPoints = [topPoint, midDescentPoint];
 
-    // 上行大動脈から先(体外側)は、実際に表示している弓部・下行大動脈・鎖骨下動脈
-    // 相当の分岐に沿わせる(対象がRCA/LAD/LCXのどれでも、狙う冠動脈がどちらでも
-    // 穿刺部位は体に対して一定の側にあるため、shapeやownAngleには依存しない)。
-    // entryPointsの終端は、可視化ジオメトリ(buildSubclavianBranchGeometry/
-    // buildAorticArchGeometryの下行大動脈部分)自体の終端と同じ点を使う——別々の
-    // 定数で「どこまで伸ばすか」を決めると、可視化側だけ変更した際に食い違って
-    // カテーテルが血管の外に突き抜けて見える(過去に実際に起きた不具合)。
+    // 上行大動脈から先(体外側)は、実際に表示している弓部・下行大動脈・腕頭動脈に
+    // 沿わせる(対象がRCA/LAD/LCXのどれでも、狙う冠動脈がどちらでも穿刺部位は体に
+    // 対して一定の側にあるため、shapeやownAngleには依存しない)。橈骨アプローチは
+    // 右橈骨(腕頭動脈経由、臨床上最も標準的)を表す。entryPointsの終端は、可視化
+    // ジオメトリ(buildBrachiocephalicBranchGeometry/buildAorticArchGeometryの下行
+    // 大動脈部分)自体の終端と同じ点を使う——別々の定数で「どこまで伸ばすか」を決めると、
+    // 可視化側だけ変更した際に食い違ってカテーテルが血管の外に突き抜けて見える
+    // (過去に実際に起きた不具合)。
     //
     // 重要: 弓部の制御点(archApex・ascendingEnd)を経路に必ず含めること。以前は
-    // 体外側の点(descendingStart/subclavianEndなど、heartScale基準で心臓から
+    // 体外側の点(descendingStart/腕頭動脈終端など、heartScale基準で心臓から
     // 大きく離れた位置)から、いきなりtopPoint(大動脈基部フレームの局所半径基準の
     // ごく小さいオフセットで、中心軸のすぐ近く)へ直接つないでいたため、2点間の
     // 位置・スケールの差が大きすぎてCatmullRomの補間が不自然に暴れ(体外側の経路が
@@ -617,8 +619,8 @@ function buildCatheterApproach(
       // 大腿アプローチ: 体外(下行大動脈の先)→下行大動脈→弓頂部→上行大動脈終端、の順。
       entryPoints = [archControlPoints.descendingEnd, archControlPoints.descendingStart, archControlPoints.archApex];
     } else {
-      // 橈骨アプローチ: 体外(鎖骨下動脈相当の先)→弓頂部→上行大動脈終端、の順。
-      entryPoints = [archControlPoints.subclavianEnd, archControlPoints.archApex];
+      // 橈骨アプローチ(右橈骨、腕頭動脈経由): 体外(腕頭動脈の先)→腕頭動脈の起点、の順。
+      entryPoints = [archControlPoints.brachiocephalicEnd, archControlPoints.brachiocephalicOrigin];
     }
   } else {
     bulgePoint = ostiumPosition
@@ -667,20 +669,22 @@ function buildCatheterApproach(
   if (aorticRootFrame) {
     const frame = aorticRootFrame;
     // 体外側(entry〜aortaPoint=上行大動脈終端)の経路は、可視化している弓部・下行大動脈・
-    // 鎖骨下動脈相当の分岐と同一の中心線(aorticRootMesh.tsのsampleAorticArchTrunk/
-    // sampleAorticDescendingBranch/sampleAorticSubclavianBranch)からそのまま点を取る
+    // 腕頭動脈と同一の中心線(aorticRootMesh.tsのsampleAorticArchTrunk/
+    // sampleAorticDescendingBranch/sampleAorticBrachiocephalicBranch)からそのまま点を取る
     // ——独立にCatmullRomCurve3を組み直す従来の実装は、大腿アプローチではたまたま
-    // 可視化側と同じ4制御点を逆順で通るだけで一致していた(CatmullRomは制御点の並びを
-    // 丸ごと逆にしても同じ曲線を描く)が、橈骨アプローチは制御点セット自体が異なり
-    // (弓頂部の次の点がdescendingStartではなくsubclavianEndになるため、上行大動脈終端
-    // 〜弓頂部の共有区間のタンジェントが上肢方向へ歪む)、実測でこの区間が可視化
-    // ジオメトリの局所半径の約3倍(半径0.5に対し最大乖離1.34)まで外れ、カテーテルが
-    // 大動脈弓のカーブを無視して上肢方向へ直進して見える不具合があった。可視化側と
-    // 同じsample関数を直接呼ぶことで、この発散が構造的に起こり得ないことを保証する。
-    const trunkPoints = sampleAorticArchTrunk(frame, heartScale, TRUNK_SAMPLE_COUNT); // ascendingEnd -> archApex
-    const trunkRadii = trunkPoints.map((_, i) =>
-      evaluateAorticArchRadius(frame, (i / TRUNK_SAMPLE_COUNT) * ARCH_TRUNK_T_FRACTION),
-    );
+    // 可視化側と同じ制御点を逆順で通るだけで一致していた(CatmullRomは制御点の並びを
+    // 丸ごと逆にしても同じ曲線を描く)が、橈骨アプローチは制御点セット自体が異なり、
+    // 実測でこの区間が可視化ジオメトリの局所半径の約3倍まで外れ、カテーテルが大動脈弓の
+    // カーブを無視して上肢方向へ直進して見える不具合があった。可視化側と同じsample関数を
+    // 直接呼ぶことで、この発散が構造的に起こり得ないことを保証する。
+    //
+    // 橈骨アプローチ(右橈骨、腕頭動脈経由)は幹区間を腕頭動脈の起点
+    // (BRACHIOCEPHALIC_ORIGIN_T_FRACTION)までで打ち切る——弓頂部(ARCH_TRUNK_T_FRACTION)
+    // まで検証すると、腕頭動脈より先(左総頸動脈・左鎖骨下動脈側)の幹区間まで含めてしまい、
+    // 実際にカテーテルが通らない区間まで検証対象になってしまう。
+    const trunkEndLogicalT = accessRoute === "radial" ? BRACHIOCEPHALIC_ORIGIN_T_FRACTION : ARCH_TRUNK_T_FRACTION;
+    const trunkPoints = sampleAorticArchTrunk(frame, heartScale, TRUNK_SAMPLE_COUNT, trunkEndLogicalT); // ascendingEnd -> archApex(大腿) / 腕頭動脈起点(橈骨)
+    const trunkRadii = trunkPoints.map((_, i) => evaluateAorticArchRadius(frame, (i / TRUNK_SAMPLE_COUNT) * trunkEndLogicalT));
     let branchPoints: Vector3[];
     let branchRadii: number[];
     if (accessRoute === "femoral") {
@@ -692,8 +696,8 @@ function buildCatheterApproach(
         ),
       );
     } else {
-      branchPoints = sampleAorticSubclavianBranch(frame, heartScale, SUBCLAVIAN_BRANCH_SAMPLE_COUNT); // archApex -> subclavianEnd
-      branchRadii = branchPoints.map((_, i) => evaluateAorticSubclavianRadius(frame, i / SUBCLAVIAN_BRANCH_SAMPLE_COUNT));
+      branchPoints = sampleAorticBrachiocephalicBranch(frame, heartScale, BRACHIOCEPHALIC_BRANCH_SAMPLE_COUNT); // 腕頭動脈起点 -> brachiocephalicEnd
+      branchRadii = branchPoints.map((_, i) => evaluateAorticBrachiocephalicRadius(frame, i / BRACHIOCEPHALIC_BRANCH_SAMPLE_COUNT));
     }
     // trunkPoints・branchPointsはどちらもascendingEnd起点・体外方向終点の順(可視化側と
     // 同じ向き)なので、entry→aortaPointの順で使うには連結してから反転する。継ぎ目
@@ -796,14 +800,14 @@ export interface GuideCatheterPath {
 const CATHETER_CURVE_RESOLUTION = 200;
 /**
  * オスティウム側(inner)のCatmullRomサンプリング点数の下限(buildCatheterApproach参照)。
- * 体外側(outer)は大動脈弓・下行大動脈・鎖骨下動脈相当の中心線からそのままサンプル数を
+ * 体外側(outer)は大動脈弓・下行大動脈・腕頭動脈の中心線からそのままサンプル数を
  * 決めるため対象外(TRUNK_SAMPLE_COUNT等参照)。
  */
 const MIN_CURVE_SEGMENT_RESOLUTION = 24;
 /**
- * 体外側の経路(entry〜aortaPoint=上行大動脈終端)を、大動脈弓・下行大動脈・鎖骨下動脈
- * 相当の可視化ジオメトリと同一の中心線(aorticRootMesh.tsのsampleAorticArchTrunk/
- * sampleAorticDescendingBranch/sampleAorticSubclavianBranch)から直接サンプリングする際の
+ * 体外側の経路(entry〜aortaPoint=上行大動脈終端)を、大動脈弓・下行大動脈・腕頭動脈の
+ * 可視化ジオメトリと同一の中心線(aorticRootMesh.tsのsampleAorticArchTrunk/
+ * sampleAorticDescendingBranch/sampleAorticBrachiocephalicBranch)から直接サンプリングする際の
  * 点数。可視化ジオメトリ(buildAorticArchGeometry等)と厳密に同じ関数を呼ぶため、
  * 両者が構造的に同一の3D点列を通ることが保証される(制御点の値だけを共有し、
  * それぞれ独立にCatmullRomCurve3を組んでいた従来の実装は、橈骨アプローチで
@@ -811,7 +815,7 @@ const MIN_CURVE_SEGMENT_RESOLUTION = 24;
  */
 const TRUNK_SAMPLE_COUNT = 40;
 const DESCENDING_BRANCH_SAMPLE_COUNT = 90;
-const SUBCLAVIAN_BRANCH_SAMPLE_COUNT = 40;
+const BRACHIOCEPHALIC_BRANCH_SAMPLE_COUNT = 40;
 
 /**
  * @param aorticRootFrame 冠動脈入口部の実位置から逆算した大動脈基部フレーム

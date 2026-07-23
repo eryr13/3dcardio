@@ -425,17 +425,61 @@ export function computeAorticRootFrame(
   }
   const chordFitSinusRadius = geometricSinusRadius * containmentRatio * CONTAINMENT_SAFETY_BUFFER;
 
-  // 上行大動脈・バルサルバ洞の交連部の基準半径は、いずれもheartWidthから算出する
-  // (AorticRootFrame.sinusRadius/ascendingRadiusのコメント参照)。heartWidthが
-  // 未指定(0)の場合のみ、上のフォールバック計算(chordFitSinusRadius)を使う。
+  // 上行大動脈の基準半径はheartWidthから算出する(AorticRootFrame.ascendingRadius参照)。
+  // heartWidthが未指定(0)の場合のみ、上のフォールバック計算(chordFitSinusRadius)を使う。
   const ascendingRadius =
     heartWidth > 1e-6 ? (heartWidth * ARCH_DIAMETER_HEART_WIDTH_RATIO) / 2 : chordFitSinusRadius * ASCENDING_RADIUS_FALLBACK_RATIO;
-  const sinusRadius = heartWidth > 1e-6 ? ascendingRadius * (PEAK_RADIUS_UNITS / ARCH_RADIUS_RATIOS[0]) : chordFitSinusRadius;
+  const initialSinusRadius = heartWidth > 1e-6 ? ascendingRadius * (PEAK_RADIUS_UNITS / ARCH_RADIUS_RATIOS[0]) : chordFitSinusRadius;
+
+  // バルサルバ洞の交連部の基準半径(sinusRadius)は、heartWidthから求めた見た目上の
+  // 大きさ(initialSinusRadius)をそのまま使うのではなく、RCA洞・左冠洞のどちらかが
+  // 実際の入口部に届くために基準の張り出し(amplitudeScale=1、PEAK_RADIUS_UNITSに
+  // 相当)を超えて大きく張り出す必要がある場合は、基準円自体をその分だけ底上げする
+  // (フォールバック分岐のcontainmentRatioと同じ考え方を、heartWidthベースの分岐にも
+  // 適用したもの)。
+  //
+  // 経緯: 大動脈基部の中心を実測した大動脈弁の位置にアンカーするよう変更した後、
+  // ある実データで「RCA入口部に届かせるには基準の張り出し(amplitudeScale=1.0)の
+  // 約1.5倍もの局所的な張り出しが必要」という事態が発生し、その洞だけが周囲から
+  // 切り離された「角」のように突出して見える不具合になっていた(ユーザー報告・
+  // 実測で確認)。原因は、heartWidthベースの基準円が実際の入口部の位置とは無関係に
+  // (見た目上の太さだけを基準に)決まっており、基準円が実際に必要な大きさより
+  // 小さい場合、その不足分がすべて1つの洞の局所的な張り出しだけに押し付けられて
+  // いたこと——RCA洞は大きく張り出す一方、左冠洞は基準円の内側に余裕を残したまま
+  // (張り出し倍率0)になっており、この非対称さが不自然な突起として現れていた。
+  // 基準円自体を(全洞共通で)底上げすることで、不足分を一部の洞だけに集中させず、
+  // 3洞全体でより均等な、なだらかな膨らみになるようにする。
+  const provisionalReferenceFrame: AorticRootFrame = {
+    center,
+    axis,
+    sinusRadius: initialSinusRadius,
+    ascendingRadius,
+    rcaAngle,
+    leftAngle,
+    nonCoronaryAngle,
+    rcaLobeAmplitudeScale: 1,
+    leftLobeAmplitudeScale: 1,
+    nonCoronaryLobeAmplitudeScale: 1,
+  };
+  let sinusGrowthRatio = 1;
+  if (heartWidth > 1e-6) {
+    for (const [, ostium] of [
+      ["RCA", rcaOstium],
+      ["LMT", MEASURED_LEFT_MAIN_OSTIUM],
+    ] as const) {
+      const bound = evaluateAorticRootRadius(provisionalReferenceFrame, ostium);
+      if (bound > 1e-6) {
+        sinusGrowthRatio = Math.max(sinusGrowthRatio, (distanceFromAxis(provisionalReferenceFrame, ostium) * CONTAINMENT_SAFETY_BUFFER) / bound);
+      }
+    }
+  }
+  const sinusRadius = heartWidth > 1e-6 ? initialSinusRadius * sinusGrowthRatio : chordFitSinusRadius;
 
   // 各洞(RCA洞・左冠洞)の局所的な張り出し倍率を、実際の入口部座標に届くよう逆算する
-  // (AorticRootFrame.rca/leftLobeAmplitudeScaleのコメント参照)。heartWidthが無い
-  // 場合は、上のchordFitSinusRadius(=sinusRadius)自体が既に3入口部を包含する大きさに
-  // なっているため、張り出し倍率は基準の1のままでよい。
+  // (AorticRootFrame.rca/leftLobeAmplitudeScaleのコメント参照)。基準円を上でsinusGrowthRatio
+  // 分だけ底上げ済みのため、ここで解く倍率は1.0付近の穏やかな値になるはず(heartWidthが
+  // 無い場合は、chordFitSinusRadius(=sinusRadius)自体が既に3入口部を包含する大きさに
+  // なっているため、張り出し倍率は基準の1のままでよい)。
   //
   // 左冠洞は、LAD/LCX個々の入口部ではなくMEASURED_LEFT_MAIN_OSTIUM(実測したLMTの
   // 大動脈壁側起始点)に届くよう逆算する——解剖学的には、大動脈壁を実際に貫くのは
@@ -547,7 +591,7 @@ function computeRequiredLobeAmplitudeScale(
   const requiredRadius = distanceFromAxis(positionFrame, ostium) * CONTAINMENT_SAFETY_BUFFER;
   const { baseRadiusAmt, lobeAmplitudeAmt } = interpolateRootProfile(upRelative);
   const angularOffset = Math.abs(angularDiff(theta, lobeAngle));
-  const falloff = angularOffset < LOBE_HALF_WIDTH ? Math.cos((angularOffset / LOBE_HALF_WIDTH) * (Math.PI / 2)) : 0;
+  const falloff = lobeFalloff(angularOffset, LOBE_HALF_WIDTH);
 
   if (upRelative < SINUS_PLATEAU_UP_RANGE[0] || upRelative > SINUS_PLATEAU_UP_RANGE[1]) {
     console.warn(
@@ -646,22 +690,33 @@ function angularDiff(a: number, b: number): number {
 }
 
 /**
+ * 洞の中心角度からの角度差(d、0〜LOBE_HALF_WIDTH)に対する張り出しの減衰形状
+ * (1=洞の中心、0=洞の範囲の境界)。単純なcos(d/halfWidth * π/2)は境界(d=halfWidth)で
+ * 値こそ0になるが傾き(導関数)が0にならず、断面をロフトした際に洞と洞の境目に
+ * 微小な折れ目(先の尖った「角」のような突起)が生じる原因になっていた(実測・
+ * Playwrightで確認)。raised cosine(Hann窓と同じ形)を使うと、中心(d=0)・境界
+ * (d=halfWidth)の両方で傾きが0になり、折れ目のない滑らかな盛り上がりになる。
+ */
+function lobeFalloff(angularOffset: number, halfWidth: number): number {
+  if (angularOffset >= halfWidth) return 0;
+  return 0.5 * (1 + Math.cos((angularOffset / halfWidth) * Math.PI));
+}
+
+/**
  * 3つの洞の張り出し量(AORTIC_ROOT_PROFILEのlobeAmplitudeAmtに掛ける倍率)。各洞中心
- * からLOBE_HALF_WIDTHの範囲でなめらかに0へ落ちる角度方向の形状(falloff)に、洞ごとの
- * amplitudeScale(AorticRootFrame.rca/left/nonCoronaryLobeAmplitudeScale——実際の
- * 冠動脈入口部の座標に届くよう洞ごとに算出した倍率)を掛け、複数の洞の張り出しが
- * 重なる場合は大きい方を採用する(=洞同士の交連部で自然に括れる)。amplitudeScaleが
- * 1.0を超える洞は、基準の張り出し量より大きく膨らむ(=実際の入口部が交連部の基準円
- * より外側にある)ことを意味する。
+ * からLOBE_HALF_WIDTHの範囲でなめらかに0へ落ちる角度方向の形状(falloff、lobeFalloff
+ * 参照)に、洞ごとのamplitudeScale(AorticRootFrame.rca/left/nonCoronaryLobeAmplitudeScale
+ * ——実際の冠動脈入口部の座標に届くよう洞ごとに算出した倍率)を掛け、複数の洞の
+ * 張り出しが重なる場合は大きい方を採用する(=洞同士の交連部で自然に括れる)。
+ * amplitudeScaleが1.0を超える洞は、基準の張り出し量より大きく膨らむ(=実際の入口部が
+ * 交連部の基準円より外側にある)ことを意味する。
  */
 function lobeBulge(theta: number, lobes: readonly { angle: number; amplitudeScale: number }[]): number {
   let bulge = 0;
   for (const lobe of lobes) {
     const d = Math.abs(angularDiff(theta, lobe.angle));
-    if (d < LOBE_HALF_WIDTH) {
-      const falloff = Math.cos((d / LOBE_HALF_WIDTH) * (Math.PI / 2));
-      bulge = Math.max(bulge, falloff * lobe.amplitudeScale);
-    }
+    const falloff = lobeFalloff(d, LOBE_HALF_WIDTH);
+    if (falloff > 0) bulge = Math.max(bulge, falloff * lobe.amplitudeScale);
   }
   return bulge;
 }
@@ -946,10 +1001,28 @@ function interpolateCircular(sortedSamples: readonly { theta: number; value: num
  * 角度(輪郭点が疎な方向や、隣接する別の構造物に近い方向)ではformula側の半径を
  * 下回らない(=冠動脈入口部の内腔収まり保証を崩さない)。
  *
+ * 輪郭点までの距離(radius)は、frame.center(=実測した大動脈弁の位置、
+ * MEASURED_AORTIC_VALVE_CENTER)を基準に測る。輪郭点自体は実測開口部の重心
+ * (detectedOpening.center、frame.centerとは別の点)の周りに分布しているため、
+ * frame.centerがその重心から離れているほど、実際にはほぼ円形にまとまっている輪郭が
+ * 「frame.centerから見て片側だけ大きく遠い(=半径が大きい)」ように投影されてしまう
+ * (偏心した視点から円を見ると、片側の見かけの半径が実際よりずっと大きくなるのと
+ * 同じ現象)。実測(Playwrightでの目視・輪郭点のtheta/radius比較)で、この投影の
+ * 歪みだけでformula半径の2倍以上に達する角度があり、Math.max経由でその角度だけ
+ * 壁面から薄い「羽」のような突起が生じることを確認した。CONTOUR_OVERSHOOT_RATIO_CAPで
+ * 輪郭がformula半径を超えて張り出せる量に上限を設け、実測開口部の正当な非対称さは
+ * 反映しつつ、投影の歪みによる過大な突起は抑える。
+ *
  * 輪郭の平均高さが洞の台地(SINUS_PLATEAU_UP_RANGE)から大きく外れている場合や、
  * 輪郭点が少なすぎる場合はnullを返す(呼び出し側はcollarを挿入せず、従来通りの
  * formula行だけでローフトを組む)。
  */
+/** 輪郭(実測開口部)がformula半径をどこまで超えて張り出せるかの上限比率。
+ * buildContourCollarRingのコメント参照——frame.centerが実測開口部の重心から離れて
+ * いるほど、投影の歪みだけで輪郭の見かけの半径がformula半径の2倍以上に達しうるため、
+ * この上限で歪みによる過大な突起を抑える。 */
+const CONTOUR_OVERSHOOT_RATIO_CAP = 1.2;
+
 function buildContourCollarRing(frame: AorticRootFrame, detectedOpening: DetectedAorticOpening | null | undefined): RingSpec | null {
   if (!detectedOpening || detectedOpening.contour.length < 8) return null;
 
@@ -983,7 +1056,7 @@ function buildContourCollarRing(frame: AorticRootFrame, detectedOpening: Detecte
     radiusAt: (theta: number) => {
       const formulaRadius = baseRadius + lobeAmplitude * lobeBulge(theta, lobes);
       const contourRadius = interpolateCircular(contourSamples, theta);
-      return Math.max(formulaRadius, contourRadius);
+      return Math.max(formulaRadius, Math.min(contourRadius, formulaRadius * CONTOUR_OVERSHOOT_RATIO_CAP));
     },
   };
 }
@@ -1025,6 +1098,55 @@ export function computeAorticValveNormal(frame: AorticRootFrame): Vector3 {
 }
 
 /**
+ * 隣接するAORTIC_ROOT_PROFILE行間でlobeAmplitudeAmt(洞の張り出し量)が変化する区間
+ * (弁輪→洞の台地、洞の台地→洞管接合部)に挿入する追加の補間リングの本数。
+ *
+ * AORTIC_ROOT_PROFILEの行はどこも疎らだが、lobeAmplitudeAmtが変化する区間だけは
+ * 断面が「3洞で膨らんだ形」から「真円」へ(またはその逆に)短いup区間で大きく変形する
+ * ため、そのままリング間を直線で結ぶと、洞の張り出し方向だけ半径が急激に収縮/膨張し、
+ * 目に見える段差(facetted "neck")になる(実測: 洞の台地上端up=0.5から洞管接合部
+ * up=0.85にかけて、RCA洞方向の半径が0.437→0.328へ約25%収縮するのに対し、この区間には
+ * 2行しか無い)。以前バルサルバ洞下端で見つかった同種の折れ目(実測弁への後付けの
+ * 傾け——現在は削除済み——のブレンドがリング不足で折れ目になっていた件)と同じ原因
+ * であり、同じ対処(新しい補間式は増やさず、既存のinterpolateRootProfile/
+ * computeEffectiveRootScale/lobeBulgeを追加の高さでも呼ぶだけの細分化)で直す。
+ */
+const LOBE_TRANSITION_RING_SUBDIVISIONS = 6;
+
+/**
+ * AORTIC_ROOT_PROFILEから、frame(中心軸・半径・3つの洞の角度)に基づくリング列
+ * (RingSpec、高さ・角度ごとの半径関数)を構築する。lobeAmplitudeAmtが変化する区間
+ * (LOBE_TRANSITION_RING_SUBDIVISIONS参照)には追加の補間リングを挿入し、断面が
+ * 短いup区間で急激に変形して段差になるのを防ぐ。
+ */
+function buildRootProfileRingSpecs(
+  frame: AorticRootFrame,
+  lobes: readonly { angle: number; amplitudeScale: number }[],
+): RingSpec[] {
+  const makeRingSpec = (upAmt: number): RingSpec => {
+    const radiusScale = computeEffectiveRootScale(frame, upAmt);
+    const { baseRadiusAmt, lobeAmplitudeAmt } = interpolateRootProfile(upAmt);
+    const baseRadius = baseRadiusAmt * radiusScale;
+    const lobeAmplitude = lobeAmplitudeAmt * radiusScale;
+    return { upAmt, radiusAt: (theta: number) => baseRadius + lobeAmplitude * lobeBulge(theta, lobes) };
+  };
+  const specs: RingSpec[] = [];
+  for (let i = 0; i < AORTIC_ROOT_PROFILE.length; i++) {
+    const [upAmt, , lobeAmplitudeAmt] = AORTIC_ROOT_PROFILE[i];
+    specs.push(makeRingSpec(upAmt));
+    if (i < AORTIC_ROOT_PROFILE.length - 1) {
+      const [nextUpAmt, , nextLobeAmplitudeAmt] = AORTIC_ROOT_PROFILE[i + 1];
+      if (Math.abs(nextLobeAmplitudeAmt - lobeAmplitudeAmt) > 1e-6) {
+        for (let k = 1; k <= LOBE_TRANSITION_RING_SUBDIVISIONS; k++) {
+          specs.push(makeRingSpec(upAmt + (nextUpAmt - upAmt) * (k / (LOBE_TRANSITION_RING_SUBDIVISIONS + 1))));
+        }
+      }
+    }
+  }
+  return specs;
+}
+
+/**
  * frame(中心軸・半径・3つの洞の角度)とAORTIC_ROOT_PROFILEから、断面が3つの洞で
  * 膨らむローフト形状を構築する。stentLatticeMeshのbuildTubeFromFrame/
  * buildTubeFromPointsは断面が円形(半径のみ可変)であることが前提のため使えず、
@@ -1054,12 +1176,7 @@ function buildLobedTubeGeometry(
   ] as const;
   const { u, v } = computeCrossSectionBasis(frame.axis);
 
-  const ringSpecs: RingSpec[] = AORTIC_ROOT_PROFILE.map(([upAmt, baseRadiusAmt, lobeAmplitudeAmt]) => {
-    const radiusScale = computeEffectiveRootScale(frame, upAmt);
-    const baseRadius = baseRadiusAmt * radiusScale;
-    const lobeAmplitude = lobeAmplitudeAmt * radiusScale;
-    return { upAmt, radiusAt: (theta: number) => baseRadius + lobeAmplitude * lobeBulge(theta, lobes) };
-  });
+  const ringSpecs: RingSpec[] = buildRootProfileRingSpecs(frame, lobes);
   const collarRing = buildContourCollarRing(frame, detectedOpening);
   if (collarRing) ringSpecs.push(collarRing);
   ringSpecs.sort((a, b) => a.upAmt - b.upAmt);
@@ -1104,6 +1221,11 @@ const ARCH_SAMPLE_COUNT = 48;
 /** 上行大動脈の直線円筒の終端(AORTIC_ROOT_PROFILEの最後の行と一致させる——ここから
  * 先を弓部・下行大動脈として引き継ぐ)。 */
 const ASCENDING_END_UP = 4.5;
+/** 弓部カーブ(論理t値、toArchCurveT参照)において弓頂部(archApex)に対応するt値
+ * (4制御点だった頃の「区間を3等分」という意味をそのまま引き継ぐ、助走点追加後も
+ * 値・意味は変えない)。3分枝の起点t値(BRACHIOCEPHALIC_ORIGIN_T_FRACTION等)が
+ * この値を参照するため、それらより前で定義する必要がある。 */
+export const ARCH_TRUNK_T_FRACTION = 1 / 3;
 /**
  * 解剖学的な左方向の簡略化。実データ(RCA/LAD/LCXオスティウム座標)には「解剖学的な
  * 左右」を明示する軸は無いが、LAD/LCX(左冠動脈)入口部が軒並みX>0、RCA(右冠動脈)が
@@ -1139,12 +1261,37 @@ const DESCENDING_START_POSTERIOR_FRACTION = 0.65;
  */
 const DESCENDING_LENGTH_FRACTION = 4.5;
 /**
- * 上肢(橈骨アプローチ)へ向かう分岐(鎖骨下動脈相当)の、弓頂部からの距離。
- * ガイディングカテーテルの橈骨アプローチはこの分岐に沿って体外側の穿刺部位
- * (手首)へ向かうため、下行大動脈と同じ理由でカテーテルの経路を覆うだけの
- * 長さを確保する。
+ * 上行大動脈終端(ascendingEnd)から見た、弓部カーブの「助走点」までのup方向オフセット
+ * (heartScale比率)。開いたCatmullRomCurve3は最初の制御点における接線を隣接する点
+ * だけから決めるため、ascendingEndの直後がarchApex(横方向にオフセットされている)
+ * しか無いと、上行大動脈の直線円筒(frame.axis方向にまっすぐ)から弓部への継ぎ目で
+ * 接線が不連続になり、いきなり横に折れて見える(実測・Playwrightで確認)。この助走点は
+ * 横オフセットを一切持たせず、frame.axis方向のみに置くことで、CatmullRomに「まっすぐ
+ * 上昇してきた」という文脈を与える——経路のサンプル対象(sampleAorticArchTrunk等)には
+ * 一切含まれない、接線を安定させるためだけの制御点(ARCH_APPROACH_T_SPAN・
+ * toArchCurveT参照)。
  */
-const SUBCLAVIAN_LENGTH_FRACTION = 2.2;
+const ASCENDING_APPROACH_UP_OFFSET = 0.6;
+/**
+ * 上肢へ向かう3分枝(腕頭動脈・左総頸動脈・左鎖骨下動脈)の、弓部カーブ上の起点
+ * (論理t値、ARCH_TRUNK_T_FRACTION参照)。実際の解剖と同じく、上行大動脈側から
+ * 下行大動脈側に向かって腕頭動脈→左総頸動脈→左鎖骨下動脈の順に並ぶ
+ * (BRACHIOCEPHALIC < LEFT_COMMON_CAROTID < ARCH_TRUNK_T_FRACTION(弓頂部) <
+ * LEFT_SUBCLAVIAN)。
+ */
+export const BRACHIOCEPHALIC_ORIGIN_T_FRACTION = ARCH_TRUNK_T_FRACTION * 0.4;
+export const LEFT_COMMON_CAROTID_ORIGIN_T_FRACTION = ARCH_TRUNK_T_FRACTION * 0.9;
+export const LEFT_SUBCLAVIAN_ORIGIN_T_FRACTION = ARCH_TRUNK_T_FRACTION + (1 - ARCH_TRUNK_T_FRACTION) * 0.3;
+/**
+ * 3分枝の長さ(それぞれの起点からの距離、heartScale比率)。腕頭動脈はガイディング
+ * カテーテルの橈骨アプローチ(右橈骨、腕頭動脈経由)の体外側経路を担うため、旧
+ * 「鎖骨下動脈相当」の代役と同じ長さを引き継ぐ(体外側の穿刺部位まで届く必要がある)。
+ * 左総頸動脈・左鎖骨下動脈はカテーテル経路を担わない可視化専用のため、実物の血管らしく
+ * 見える程度の短い長さでよい。
+ */
+const BRACHIOCEPHALIC_LENGTH_FRACTION = 2.2;
+const LEFT_COMMON_CAROTID_LENGTH_FRACTION = 1.2;
+const LEFT_SUBCLAVIAN_LENGTH_FRACTION = 1.3;
 /**
  * 弓部・下行大動脈の断面半径比(sinusRadius基準、上行大動脈終端の1.15から弓頂部・
  * 下行開始・下行終端にかけて緩やかに先細りさせる——実測比の目安として、弓部は
@@ -1152,31 +1299,54 @@ const SUBCLAVIAN_LENGTH_FRACTION = 2.2;
  */
 const ARCH_RADIUS_RATIOS: readonly number[] = [1.15, 1.03, 0.95, 0.85];
 /**
- * 鎖骨下動脈相当の分岐の太さ(弓頂部での大動脈の局所半径に対する比率)。実際の
- * 鎖骨下動脈は大動脈弓よりかなり細い(概ね口径で1/3程度)。
+ * 3分枝それぞれの太さ(起点での大動脈弓の局所半径に対する比率)。実際の血管の太さの
+ * 目安通り、腕頭動脈が最も太く(大動脈弓自体に次ぐ太さ)、左総頸動脈が最も細い。
  */
-const SUBCLAVIAN_RADIUS_RATIO = 0.35;
+const BRACHIOCEPHALIC_RADIUS_RATIO = 0.48;
+const LEFT_COMMON_CAROTID_RADIUS_RATIO = 0.24;
+const LEFT_SUBCLAVIAN_RADIUS_RATIO = 0.33;
 
 /**
- * 弓部大動脈・下行大動脈・上肢への分岐(鎖骨下動脈相当)の主要点(上行大動脈終端・
- * 弓頂部・下行開始点・下行終端点・鎖骨下動脈相当の終端)。buildAorticArchGeometry/
- * buildSubclavianBranchGeometry(可視化用のチューブ)と、ガイディングカテーテルの
- * 体外側経路(guideDeviceMesh.ts)の両方が、同じ大動脈の形に沿うようこれを共有する
- * ——弓部・下行大動脈を追加した直後は、カテーテルの体外側経路の「どこまで伸ばすか」を
- * guideDeviceMesh.ts側に独立した定数として複製しており、この可視化ジオメトリ側の
- * 長さと食い違って「カテーテルが血管の外に突き抜けて見える」不具合になっていた。
- * 単一の関数から両方の値を得ることで、この食い違いが再発しないようにする。
+ * 弓部大動脈・下行大動脈・上肢への3分枝(腕頭動脈・左総頸動脈・左鎖骨下動脈)の主要点。
+ * buildAorticArchGeometry/build*BranchGeometry(可視化用のチューブ)と、ガイディング
+ * カテーテルの体外側経路(guideDeviceMesh.ts)の両方が、同じ大動脈の形に沿うようこれを
+ * 共有する——弓部・下行大動脈を追加した直後は、カテーテルの体外側経路の「どこまで
+ * 伸ばすか」をguideDeviceMesh.ts側に独立した定数として複製しており、この可視化
+ * ジオメトリ側の長さと食い違って「カテーテルが血管の外に突き抜けて見える」不具合に
+ * なっていた。単一の関数から両方の値を得ることで、この食い違いが再発しないようにする。
  */
 export interface AorticArchControlPoints {
+  /** 上行大動脈終端の直前、frame.axis方向のみの助走点(ASCENDING_APPROACH_UP_OFFSET
+   * 参照)。経路のサンプル対象には含まれない、接線安定化専用。 */
+  ascendingApproach: Vector3;
   ascendingEnd: Vector3;
   archApex: Vector3;
   descendingStart: Vector3;
   descendingEnd: Vector3;
-  subclavianEnd: Vector3;
+  brachiocephalicOrigin: Vector3;
+  brachiocephalicEnd: Vector3;
+  leftCommonCarotidOrigin: Vector3;
+  leftCommonCarotidEnd: Vector3;
+  leftSubclavianOrigin: Vector3;
+  leftSubclavianEnd: Vector3;
+}
+
+/** ascendingApproach〜descendingEndの5制御点から、共有のCatmullRomCurve3を組む
+ * (buildAorticArchCurve・computeAorticArchControlPointsの両方が使う、唯一の組み立て
+ * 箇所)。 */
+function buildCatmullRomFromPrimaryPoints(
+  ascendingApproach: Vector3,
+  ascendingEnd: Vector3,
+  archApex: Vector3,
+  descendingStart: Vector3,
+  descendingEnd: Vector3,
+): CatmullRomCurve3 {
+  return new CatmullRomCurve3([ascendingApproach, ascendingEnd, archApex, descendingStart, descendingEnd]);
 }
 
 export function computeAorticArchControlPoints(frame: AorticRootFrame, heartScale: number): AorticArchControlPoints {
   const ascendingEnd = pointAtRelativeHeight(frame, ASCENDING_END_UP);
+  const ascendingApproach = pointAtRelativeHeight(frame, ASCENDING_END_UP - ASCENDING_APPROACH_UP_OFFSET);
   const archApex = ascendingEnd
     .clone()
     .addScaledVector(frame.axis, ARCH_APEX_UP_FRACTION * heartScale)
@@ -1189,31 +1359,96 @@ export function computeAorticArchControlPoints(frame: AorticRootFrame, heartScal
     .addScaledVector(ARCH_POSTERIOR_DIRECTION, DESCENDING_START_POSTERIOR_FRACTION * heartScale);
   const descendingEnd = descendingStart.clone().addScaledVector(frame.axis, -DESCENDING_LENGTH_FRACTION * heartScale);
   const archDirection = archApex.clone().sub(ascendingEnd).normalize();
-  const subclavianEnd = archApex.clone().addScaledVector(archDirection, SUBCLAVIAN_LENGTH_FRACTION * heartScale);
-  return { ascendingEnd, archApex, descendingStart, descendingEnd, subclavianEnd };
+
+  const curve = buildCatmullRomFromPrimaryPoints(ascendingApproach, ascendingEnd, archApex, descendingStart, descendingEnd);
+  const brachiocephalicOrigin = curve.getPoint(toArchCurveT(BRACHIOCEPHALIC_ORIGIN_T_FRACTION));
+  const leftCommonCarotidOrigin = curve.getPoint(toArchCurveT(LEFT_COMMON_CAROTID_ORIGIN_T_FRACTION));
+  const leftSubclavianOrigin = curve.getPoint(toArchCurveT(LEFT_SUBCLAVIAN_ORIGIN_T_FRACTION));
+  // 腕頭動脈・左総頸動脈は、起点における弓部カーブ自体の接線方向(curve.getTangent)を
+  // 基準に延ばす——起点がascendingEndに近く、カーブ自体がまだ緩やかにしか曲がっていない
+  // 位置にあるため、固定方向(archDirection、弓全体の弦の向き)をそのまま使うと起点での
+  // カーブの向きと大きくずれ、分枝がその場で鋭く折れ曲がる(いびつな「フック」状)に
+  // 見えることが実測(Playwrightで確認)で判明した。
+  //
+  // 腕頭動脈は起点がascendingEndに最も近く(局所接線がほぼ弓部本体の進行方向と一致する)、
+  // 純粋に局所接線だけを使うと弓部本体とほぼ同じ経路をたどってしまい、分枝が本体の管に
+  // 隠れて見えなくなる(実測・Playwrightで確認)。局所接線に固定方向(archDirection)を
+  // 半分ブレンドすることで、起点での折れ曲がりを避けつつ、弓部本体から十分な角度で
+  // 分かれて見えるようにする。左総頸動脈は起点が弓頂部に近く、局所接線の時点で既に
+  // 弓部本体から十分離れた向きになるため、ブレンドは不要(純粋な局所接線のまま)。
+  //
+  // 左鎖骨下動脈だけは例外的に固定方向(archDirection)のままにする——起点が弓頂部を
+  // 過ぎた位置にあり、そこでの局所接線は下行大動脈側(下向き)を向いてしまうため、
+  // 局所接線を使うと上肢へ向かうはずの分枝が下行大動脈に沿うように折れて見えてしまう。
+  const BRACHIOCEPHALIC_TANGENT_BLEND = 0.75;
+  const brachiocephalicDirection = curve
+    .getTangent(toArchCurveT(BRACHIOCEPHALIC_ORIGIN_T_FRACTION))
+    .lerp(archDirection, BRACHIOCEPHALIC_TANGENT_BLEND)
+    .normalize();
+  const leftCommonCarotidDirection = curve.getTangent(toArchCurveT(LEFT_COMMON_CAROTID_ORIGIN_T_FRACTION)).normalize();
+  const brachiocephalicEnd = brachiocephalicOrigin
+    .clone()
+    .addScaledVector(brachiocephalicDirection, BRACHIOCEPHALIC_LENGTH_FRACTION * heartScale);
+  const leftCommonCarotidEnd = leftCommonCarotidOrigin
+    .clone()
+    .addScaledVector(leftCommonCarotidDirection, LEFT_COMMON_CAROTID_LENGTH_FRACTION * heartScale);
+  const leftSubclavianEnd = leftSubclavianOrigin.clone().addScaledVector(archDirection, LEFT_SUBCLAVIAN_LENGTH_FRACTION * heartScale);
+
+  return {
+    ascendingApproach,
+    ascendingEnd,
+    archApex,
+    descendingStart,
+    descendingEnd,
+    brachiocephalicOrigin,
+    brachiocephalicEnd,
+    leftCommonCarotidOrigin,
+    leftCommonCarotidEnd,
+    leftSubclavianOrigin,
+    leftSubclavianEnd,
+  };
 }
 
 /**
- * 弓部大動脈本体(上行大動脈終端→弓頂部→下行大動脈開始点→終端点)を通る単一の
+ * 弓部大動脈本体(助走点→上行大動脈終端→弓頂部→下行大動脈開始点→終端点)を通る単一の
  * CatmullRomCurve3。この1本のカーブが「大動脈弓の中心線」の唯一のデータソースであり、
  * buildAorticArchGeometry(可視化)・sampleAorticArchTrunk/sampleAorticDescendingBranch
  * (ガイディングカテーテルの経路、guideDeviceMesh.ts)は全てこの関数(または
- * その結果を経由するsample*関数)を通じてのみ点を得る。t∈[0, ARCH_TRUNK_T_FRACTION]が
- * 上行大動脈終端→弓頂部の「幹」区間、t∈[ARCH_TRUNK_T_FRACTION, 1]が弓頂部→下行大動脈の
- * 「枝」区間に対応する(4制御点のCatmullRomは各区間がtを3等分するため)。
+ * その結果を経由するsample*関数)を通じてのみ点を得る。
+ *
+ * 論理t値(0=ascendingEnd, ARCH_TRUNK_T_FRACTION=archApex, 1=descendingEnd——助走点
+ * 追加前と同じ意味・同じ値)と、この関数が返す実カーブ上のt値(0=ascendingApproach、
+ * 助走点1個分ずれる)は異なる。sample*関数は必ずtoArchCurveTで変換してから
+ * curve.getPointを呼ぶこと——ARCH_TRUNK_T_FRACTION自体やその消費側
+ * (evaluateAorticArchRadius・buildAorticArchGeometry・guideDeviceMesh.ts)は
+ * 論理t値のみを扱うため、この関数の内部実装が変わっても影響しない。
  */
 function buildAorticArchCurve(frame: AorticRootFrame, heartScale: number): CatmullRomCurve3 {
-  const { ascendingEnd, archApex, descendingStart, descendingEnd } = computeAorticArchControlPoints(frame, heartScale);
-  return new CatmullRomCurve3([ascendingEnd, archApex, descendingStart, descendingEnd]);
+  const { ascendingApproach, ascendingEnd, archApex, descendingStart, descendingEnd } = computeAorticArchControlPoints(
+    frame,
+    heartScale,
+  );
+  return buildCatmullRomFromPrimaryPoints(ascendingApproach, ascendingEnd, archApex, descendingStart, descendingEnd);
 }
 
-/** 4制御点のCatmullRomCurve3において、弓頂部(2番目の制御点)に対応するt値(区間は等分される)。 */
-export const ARCH_TRUNK_T_FRACTION = 1 / 3;
+/** 5制御点(助走点込み)のCatmullRomCurve3において、ascendingEnd〜descendingEndの
+ * 「主要区間」が占めるtの開始値(助走点1個分=1/4区間)。 */
+const ARCH_APPROACH_T_SPAN = 1 / 4;
+
+/** 論理t値(0=ascendingEnd, 1=descendingEnd)を、buildAorticArchCurveが返す実カーブの
+ * t値へ変換する。toArchCurveT(0)=ARCH_APPROACH_T_SPAN(ascendingEndに厳密一致)、
+ * toArchCurveT(1)=1(descendingEndに厳密一致)。 */
+function toArchCurveT(logicalT: number): number {
+  return ARCH_APPROACH_T_SPAN + logicalT * (1 - ARCH_APPROACH_T_SPAN);
+}
 
 /**
  * 上行大動脈終端(ascendingEnd)から弓頂部(archApex)までの「幹」区間の密なサンプル点
- * (ascendingEnd起点、archApex終点の順、両端を含む)。buildAorticArchCurveが返す単一の
- * カーブ(下行大動脈側の制御点も使ってこの区間のタンジェントを決める)から直接切り出す。
+ * (ascendingEnd起点、終点の順、両端を含む)。buildAorticArchCurveが返す単一のカーブ
+ * から直接切り出す。endLogicalT(省略時はARCH_TRUNK_T_FRACTION=弓頂部まで)を指定
+ * すると、幹区間の途中(3分枝いずれかの起点など)まででサンプルを打ち切れる
+ * ——ガイディングカテーテルの橈骨アプローチ(guideDeviceMesh.ts)が、腕頭動脈の起点
+ * までで幹区間の検証を打ち切るために使う。
  *
  * ガイディングカテーテルの体外側経路(guideDeviceMesh.ts、大腿・橈骨の両アプローチ共通)
  * がこの関数をそのまま呼んで経路点として使うことで、画面に実際に表示される弓部の形
@@ -1221,15 +1456,19 @@ export const ARCH_TRUNK_T_FRACTION = 1 / 3;
  * 構造的に同一の3D点列になることを保証する——制御点の「値」だけを共有し、可視化側・
  * カテーテル側がそれぞれ独立にCatmullRomCurve3を組んでいた従来の実装は、大腿
  * アプローチ(制御点の並びがたまたま可視化側と完全に一致・逆順なだけ)では実害が
- * 無かったが、橈骨アプローチ(制御点セット自体が異なる——次の点がdescendingStartでは
- * なくsubclavianEndになるためタンジェントが別方向に歪む)では、この幹区間でカテーテルが
- * 弓の可視化ジオメトリから大きく(半径の3倍近く)外れる不具合があった。
+ * 無かったが、橈骨アプローチ(制御点セット自体が異なる)では、この幹区間でカテーテルが
+ * 弓の可視化ジオメトリから大きく外れる不具合があった。
  */
-export function sampleAorticArchTrunk(frame: AorticRootFrame, heartScale: number, sampleCount: number): Vector3[] {
+export function sampleAorticArchTrunk(
+  frame: AorticRootFrame,
+  heartScale: number,
+  sampleCount: number,
+  endLogicalT: number = ARCH_TRUNK_T_FRACTION,
+): Vector3[] {
   const curve = buildAorticArchCurve(frame, heartScale);
   const points: Vector3[] = [];
   for (let i = 0; i <= sampleCount; i++) {
-    points.push(curve.getPoint((i / sampleCount) * ARCH_TRUNK_T_FRACTION));
+    points.push(curve.getPoint(toArchCurveT((i / sampleCount) * endLogicalT)));
   }
   return points;
 }
@@ -1245,24 +1484,42 @@ export function sampleAorticDescendingBranch(frame: AorticRootFrame, heartScale:
   const points: Vector3[] = [];
   for (let i = 0; i <= sampleCount; i++) {
     const t = ARCH_TRUNK_T_FRACTION + (i / sampleCount) * (1 - ARCH_TRUNK_T_FRACTION);
-    points.push(curve.getPoint(t));
+    points.push(curve.getPoint(toArchCurveT(t)));
   }
   return points;
 }
 
+/** origin〜endの直線上の密なサンプル点(origin起点、end終点の順、両端を含む)。
+ * 腕頭動脈・左総頸動脈・左鎖骨下動脈はいずれも実際の形状が直線(2点チューブ)なので、
+ * この共通ヘルパーを3分枝それぞれのsample*関数から呼ぶ。 */
+function sampleLinearArchBranch(origin: Vector3, end: Vector3, sampleCount: number): Vector3[] {
+  const points: Vector3[] = [];
+  for (let i = 0; i <= sampleCount; i++) points.push(origin.clone().lerp(end, i / sampleCount));
+  return points;
+}
+
 /**
- * 弓頂部(archApex)から上肢(橈骨アプローチ)へ向かう分岐相当の終端(subclavianEnd)までの
- * 密なサンプル点(archApex起点、subclavianEnd終点の順、両端を含む)。実際の形状は直線
- * (buildSubclavianBranchGeometryが作る2点チューブと同じ)だが、sampleAorticArchTrunk/
- * sampleAorticDescendingBranchと呼び出し規約を揃えるためsample*関数として提供する
- * ——ガイディングカテーテルの橈骨アプローチ(guideDeviceMesh.ts)がこの関数をそのまま
+ * 弓部カーブ上の起点から腕頭動脈の終端(brachiocephalicEnd)までの密なサンプル点。
+ * ガイディングカテーテルの橈骨アプローチ(guideDeviceMesh.ts)がこの関数をそのまま
  * 使うことで、可視化ジオメトリと同一の点列を通ることを保証する。
  */
-export function sampleAorticSubclavianBranch(frame: AorticRootFrame, heartScale: number, sampleCount: number): Vector3[] {
-  const { archApex, subclavianEnd } = computeAorticArchControlPoints(frame, heartScale);
-  const points: Vector3[] = [];
-  for (let i = 0; i <= sampleCount; i++) points.push(archApex.clone().lerp(subclavianEnd, i / sampleCount));
-  return points;
+export function sampleAorticBrachiocephalicBranch(frame: AorticRootFrame, heartScale: number, sampleCount: number): Vector3[] {
+  const { brachiocephalicOrigin, brachiocephalicEnd } = computeAorticArchControlPoints(frame, heartScale);
+  return sampleLinearArchBranch(brachiocephalicOrigin, brachiocephalicEnd, sampleCount);
+}
+
+/** 弓部カーブ上の起点から左総頸動脈の終端までの密なサンプル点(可視化専用、
+ * カテーテル経路には使わない)。 */
+export function sampleAorticLeftCommonCarotidBranch(frame: AorticRootFrame, heartScale: number, sampleCount: number): Vector3[] {
+  const { leftCommonCarotidOrigin, leftCommonCarotidEnd } = computeAorticArchControlPoints(frame, heartScale);
+  return sampleLinearArchBranch(leftCommonCarotidOrigin, leftCommonCarotidEnd, sampleCount);
+}
+
+/** 弓部カーブ上の起点から左鎖骨下動脈の終端までの密なサンプル点(可視化専用、
+ * カテーテル経路には使わない)。 */
+export function sampleAorticLeftSubclavianBranch(frame: AorticRootFrame, heartScale: number, sampleCount: number): Vector3[] {
+  const { leftSubclavianOrigin, leftSubclavianEnd } = computeAorticArchControlPoints(frame, heartScale);
+  return sampleLinearArchBranch(leftSubclavianOrigin, leftSubclavianEnd, sampleCount);
 }
 
 /**
@@ -1308,21 +1565,11 @@ export function buildAorticArchGeometry(frame: AorticRootFrame, heartScale: numb
   return buildTubeFromPoints(points, radii, RADIAL_SEGMENTS, 0);
 }
 
-/** buildSubclavianBranchGeometryの経路サンプリング数。 */
-const SUBCLAVIAN_SAMPLE_COUNT = 8;
-
-/**
- * 上肢(橈骨アプローチ)へ向かう分岐(鎖骨下動脈相当)のジオメトリを構築する。
- * sampleAorticSubclavianBranchが返す点列(弓頂部からsubclavianEndまでの直線)を、
- * 実際の血管より細い先細りチューブにする——ガイディングカテーテルの橈骨アプローチは
- * この分岐に沿って体外側へ向かうため(guideDeviceMesh.ts参照)、この分岐が無いと
- * カテーテルが血管の外側(何もない空間)を通っているように見えてしまう。
- */
-export function buildSubclavianBranchGeometry(frame: AorticRootFrame, heartScale: number): BufferGeometry {
-  const points = sampleAorticSubclavianBranch(frame, heartScale, SUBCLAVIAN_SAMPLE_COUNT);
-  const radii = points.map((_, i) => evaluateAorticSubclavianRadius(frame, i / SUBCLAVIAN_SAMPLE_COUNT));
-  return buildTubeFromPoints(points, radii, Math.round(RADIAL_SEGMENTS / 2), 0);
-}
+/** 3分枝それぞれの経路サンプリング数。腕頭動脈はカテーテル経路の検証にも使うため
+ * 太め・細かめに、左総頸動脈・左鎖骨下動脈は可視化専用のため少なめでよい。 */
+const BRACHIOCEPHALIC_SAMPLE_COUNT = 12;
+const LEFT_COMMON_CAROTID_SAMPLE_COUNT = 8;
+const LEFT_SUBCLAVIAN_SAMPLE_COUNT = 8;
 
 /**
  * pointの位置における大動脈弓・下行大動脈(sampleAorticArchTrunk/sampleAorticDescendingBranch
@@ -1343,16 +1590,57 @@ export function evaluateAorticArchRadius(frame: AorticRootFrame, centerlineFract
   return ratio * scale;
 }
 
+/** fraction(0=起点、1=終端)における3分枝それぞれの局所半径を返す(起点での大動脈弓の
+ * 局所半径×それぞれのRADIUS_RATIO、そこから末端にかけてわずかに先細り)。
+ * guideDeviceMesh.tsの経路内腔検証が使う。 */
+function evaluateLinearArchBranchRadius(originRadius: number, fraction: number): number {
+  return originRadius * (1 - 0.15 * Math.max(0, Math.min(1, fraction)));
+}
+
+export function evaluateAorticBrachiocephalicRadius(frame: AorticRootFrame, fraction: number): number {
+  const originRadius = evaluateAorticArchRadius(frame, BRACHIOCEPHALIC_ORIGIN_T_FRACTION) * BRACHIOCEPHALIC_RADIUS_RATIO;
+  return evaluateLinearArchBranchRadius(originRadius, fraction);
+}
+
+export function evaluateAorticLeftCommonCarotidRadius(frame: AorticRootFrame, fraction: number): number {
+  const originRadius = evaluateAorticArchRadius(frame, LEFT_COMMON_CAROTID_ORIGIN_T_FRACTION) * LEFT_COMMON_CAROTID_RADIUS_RATIO;
+  return evaluateLinearArchBranchRadius(originRadius, fraction);
+}
+
+export function evaluateAorticLeftSubclavianRadius(frame: AorticRootFrame, fraction: number): number {
+  const originRadius = evaluateAorticArchRadius(frame, LEFT_SUBCLAVIAN_ORIGIN_T_FRACTION) * LEFT_SUBCLAVIAN_RADIUS_RATIO;
+  return evaluateLinearArchBranchRadius(originRadius, fraction);
+}
+
+/** origin〜endの直線点列(sampleLinearArchBranch)と半径列から、細く先細りするチューブを
+ * 構築する共通ヘルパー(旧buildSubclavianBranchGeometryと同じロフト)。 */
+function buildLinearArchBranchGeometry(points: Vector3[], radii: number[]): BufferGeometry {
+  return buildTubeFromPoints(points, radii, Math.round(RADIAL_SEGMENTS / 2), 0);
+}
+
 /**
- * fraction(0=archApex、1=subclavianEnd)における鎖骨下動脈相当の分岐の局所半径を返す。
- * buildSubclavianBranchGeometryと同じ計算式(弓頂部での大動脈の局所半径×
- * SUBCLAVIAN_RADIUS_RATIO、そこから末端にかけてわずかに先細り)。
- * guideDeviceMesh.tsの経路内腔検証が使う。
+ * 腕頭動脈のジオメトリを構築する。ガイディングカテーテルの橈骨アプローチ(右橈骨、
+ * 腕頭動脈経由)はこの分岐に沿って体外側へ向かうため(guideDeviceMesh.ts参照)、
+ * この分岐が無いとカテーテルが血管の外側(何もない空間)を通っているように見えてしまう。
  */
-export function evaluateAorticSubclavianRadius(frame: AorticRootFrame, fraction: number): number {
-  const archApexRadius = evaluateAorticArchRadius(frame, ARCH_TRUNK_T_FRACTION);
-  const branchRadius = archApexRadius * SUBCLAVIAN_RADIUS_RATIO;
-  return branchRadius * (1 - 0.15 * Math.max(0, Math.min(1, fraction)));
+export function buildBrachiocephalicBranchGeometry(frame: AorticRootFrame, heartScale: number): BufferGeometry {
+  const points = sampleAorticBrachiocephalicBranch(frame, heartScale, BRACHIOCEPHALIC_SAMPLE_COUNT);
+  const radii = points.map((_, i) => evaluateAorticBrachiocephalicRadius(frame, i / BRACHIOCEPHALIC_SAMPLE_COUNT));
+  return buildLinearArchBranchGeometry(points, radii);
+}
+
+/** 左総頸動脈のジオメトリを構築する(可視化専用、カテーテル経路には使わない)。 */
+export function buildLeftCommonCarotidBranchGeometry(frame: AorticRootFrame, heartScale: number): BufferGeometry {
+  const points = sampleAorticLeftCommonCarotidBranch(frame, heartScale, LEFT_COMMON_CAROTID_SAMPLE_COUNT);
+  const radii = points.map((_, i) => evaluateAorticLeftCommonCarotidRadius(frame, i / LEFT_COMMON_CAROTID_SAMPLE_COUNT));
+  return buildLinearArchBranchGeometry(points, radii);
+}
+
+/** 左鎖骨下動脈のジオメトリを構築する(可視化専用、カテーテル経路には使わない)。 */
+export function buildLeftSubclavianBranchGeometry(frame: AorticRootFrame, heartScale: number): BufferGeometry {
+  const points = sampleAorticLeftSubclavianBranch(frame, heartScale, LEFT_SUBCLAVIAN_SAMPLE_COUNT);
+  const radii = points.map((_, i) => evaluateAorticLeftSubclavianRadius(frame, i / LEFT_SUBCLAVIAN_SAMPLE_COUNT));
+  return buildLinearArchBranchGeometry(points, radii);
 }
 
 /**

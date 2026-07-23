@@ -8,7 +8,9 @@ import {
   MEASURED_LEFT_MAIN_OSTIUM,
   buildAorticArchGeometry,
   buildAorticRootGeometry,
-  buildSubclavianBranchGeometry,
+  buildBrachiocephalicBranchGeometry,
+  buildLeftCommonCarotidBranchGeometry,
+  buildLeftSubclavianBranchGeometry,
   computeAorticRootFrame,
 } from "./aorticRootMesh";
 import type { DetectedAorticOpening } from "./heartAorticOpening";
@@ -73,8 +75,16 @@ export function AorticRootOverlay({
     [frame, heartScale],
   );
 
-  const subclavianGeometry = useMemo(
-    () => (frame ? buildSubclavianBranchGeometry(frame, heartScale) : null),
+  const brachiocephalicGeometry = useMemo(
+    () => (frame ? buildBrachiocephalicBranchGeometry(frame, heartScale) : null),
+    [frame, heartScale],
+  );
+  const leftCommonCarotidGeometry = useMemo(
+    () => (frame ? buildLeftCommonCarotidBranchGeometry(frame, heartScale) : null),
+    [frame, heartScale],
+  );
+  const leftSubclavianGeometry = useMemo(
+    () => (frame ? buildLeftSubclavianBranchGeometry(frame, heartScale) : null),
     [frame, heartScale],
   );
 
@@ -102,7 +112,9 @@ export function AorticRootOverlay({
     <>
       <mesh geometry={rootGeometry} material={material} />
       {archGeometry && <mesh geometry={archGeometry} material={material} />}
-      {subclavianGeometry && <mesh geometry={subclavianGeometry} material={material} />}
+      {brachiocephalicGeometry && <mesh geometry={brachiocephalicGeometry} material={material} />}
+      {leftCommonCarotidGeometry && <mesh geometry={leftCommonCarotidGeometry} material={material} />}
+      {leftSubclavianGeometry && <mesh geometry={leftSubclavianGeometry} material={material} />}
       {lmtMarkerRadius > 1e-6 && (
         <group>
           <mesh position={MEASURED_LEFT_MAIN_OSTIUM}>

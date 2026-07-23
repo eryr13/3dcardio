@@ -2,15 +2,16 @@ import { describe, expect, it } from "vitest";
 import { Box3, Mesh, SphereGeometry, Vector3 } from "three";
 import {
   ARCH_TRUNK_T_FRACTION,
+  BRACHIOCEPHALIC_ORIGIN_T_FRACTION,
   computeAorticRootFrame,
   distanceFromAxis,
   evaluateAorticArchRadius,
+  evaluateAorticBrachiocephalicRadius,
   evaluateAorticRootRadius,
-  evaluateAorticSubclavianRadius,
   projectOntoFrame,
   sampleAorticArchTrunk,
+  sampleAorticBrachiocephalicBranch,
   sampleAorticDescendingBranch,
-  sampleAorticSubclavianBranch,
 } from "./aorticRootMesh";
 import type { AorticRootFrame } from "./aorticRootMesh";
 import {
@@ -338,7 +339,7 @@ describe("computeGuideCatheterPath / buildGuideCatheterGeometry", () => {
     }
   });
 
-  it("outer path (entry -> ascending aorta) stays within the visualized aortic arch/descending-aorta/subclavian-branch tube -- regression for the radial-route divergence bug", () => {
+  it("outer path (entry -> ascending aorta) stays within the visualized aortic arch/descending-aorta/brachiocephalic-branch tube -- regression for the radial-route divergence bug", () => {
     // Previously, the catheter's outer path (entry -> ascendingEnd) was built by fitting an
     // independent CatmullRomCurve3 through control points (e.g. [subclavianEnd, archApex,
     // ascendingEnd] for radial), while the VISUALIZED arch tube (buildAorticArchGeometry) was
@@ -352,9 +353,14 @@ describe("computeGuideCatheterPath / buildGuideCatheterGeometry", () => {
     // reproduction -- i.e. the catheter shot off toward the arm instead of following the arch's
     // curve. The fix makes both the catheter path and the visualized tube sample from the exact
     // same underlying curve (aorticRootMesh.ts's sampleAorticArchTrunk/
-    // sampleAorticDescendingBranch/sampleAorticSubclavianBranch), which this test verifies
+    // sampleAorticDescendingBranch/sampleAorticBrachiocephalicBranch), which this test verifies
     // numerically by rebuilding the ground-truth centerline independently and checking every
     // dense path point in the arch region against its local tube radius.
+    //
+    // Radial access now represents right radial via the brachiocephalic trunk (not a generic,
+    // left/right-ambiguous "subclavian-equivalent" branch), so its trunk segment is truncated to
+    // BRACHIOCEPHALIC_ORIGIN_T_FRACTION (the brachiocephalic trunk's origin on the arch), not all
+    // the way to ARCH_TRUNK_T_FRACTION (the arch apex) -- matching guideDeviceMesh.ts's own logic.
     const realisticHeartScale = 2.5;
     const frame = makeAorticRootFrame({ center: new Vector3(5, 5, 5), rcaAngle: 0, leftAngle: Math.PI / 2, sinusRadius: 0.6 });
 
@@ -362,8 +368,9 @@ describe("computeGuideCatheterPath / buildGuideCatheterGeometry", () => {
       const path = computeGuideCatheterPath(graph, heartCentroid, realisticHeartScale, "RCA", accessRoute, frame, null)!;
 
       const sampleN = 200;
-      const trunkPts = sampleAorticArchTrunk(frame, realisticHeartScale, sampleN);
-      const trunkRadii = trunkPts.map((_, i) => evaluateAorticArchRadius(frame, (i / sampleN) * ARCH_TRUNK_T_FRACTION));
+      const trunkEndLogicalT = accessRoute === "radial" ? BRACHIOCEPHALIC_ORIGIN_T_FRACTION : ARCH_TRUNK_T_FRACTION;
+      const trunkPts = sampleAorticArchTrunk(frame, realisticHeartScale, sampleN, trunkEndLogicalT);
+      const trunkRadii = trunkPts.map((_, i) => evaluateAorticArchRadius(frame, (i / sampleN) * trunkEndLogicalT));
       let branchPts: Vector3[];
       let branchRadii: number[];
       if (accessRoute === "femoral") {
@@ -372,8 +379,8 @@ describe("computeGuideCatheterPath / buildGuideCatheterGeometry", () => {
           evaluateAorticArchRadius(frame, ARCH_TRUNK_T_FRACTION + (i / sampleN) * (1 - ARCH_TRUNK_T_FRACTION)),
         );
       } else {
-        branchPts = sampleAorticSubclavianBranch(frame, realisticHeartScale, sampleN);
-        branchRadii = branchPts.map((_, i) => evaluateAorticSubclavianRadius(frame, i / sampleN));
+        branchPts = sampleAorticBrachiocephalicBranch(frame, realisticHeartScale, sampleN);
+        branchRadii = branchPts.map((_, i) => evaluateAorticBrachiocephalicRadius(frame, i / sampleN));
       }
       const centerline = [...trunkPts, ...branchPts.slice(1)];
       const centerlineRadii = [...trunkRadii, ...branchRadii.slice(1)];
