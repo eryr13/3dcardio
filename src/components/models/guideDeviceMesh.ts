@@ -160,6 +160,20 @@ const TIP_ENGAGEMENT_DEPTH_FRACTION = 0.02;
  * HOOKの角度は、frame.rcaAngle/leftAngle(RCA/LAD+LCXの平均)ではなく、対象冠動脈
  * 自身の実際の入口部方向(ownAngle、buildCatheterApproach内で個別に算出)へ寄せる
  * ——LADとLCXは実際には別の角度にあるため、平均値ではなく個別の実データを使う。
+ *
+ * HOOK自体は壁基準(wallHookPoint、高さ・角度・到達率とも従来通りの固定式)で求めた
+ * うえで、そこから対象冠動脈自身の実際の入口部位置(ostiumPosition)へ、直線補間で
+ * HOOK_OSTIUM_BLENDの割合だけ寄せる。LAD/LCXは解剖学的にLMT分岐後の構造のため、
+ * 実際の入口部は壁基準の到達率(HOOK_RADIUS_FRACTION=0.4、壁の内側)よりかなり
+ * 外側(到達率1.6前後)にある。以前はHOOKの高さだけを実際の入口部の高さへ寄せて
+ * いたが、そうすると高さは合っても到達率(半径方向)は壁基準の小さい値のままなので、
+ * HOOKから先端(tipAlignmentPoint→ostiumPosition)までのごく短い区間だけで壁内から
+ * 壁の1.6倍外側までの半径変化を一気に埋めることになり、そこだけ不自然に急激に
+ * 膨らんで見える不具合になっていた(ユーザー報告:「カテーテルが上に飛び上がって
+ * しまっている」——実測でも、内腔到達率がこの区間だけ1点間隔で0.95→1.59まで跳ね
+ * 上がっていたことを確認した)。高さ・角度・到達率をそれぞれ別々の割合で個別に
+ * 実際の入口部へ寄せるのではなく、HOOK自体の3D座標を実際の入口部の3D座標へ直線
+ * 補間することで、どの成分についても不連続な跳躍が起きないようにする。
  */
 const LUMEN_TOP_UP_RELATIVE = 2.9;
 const LUMEN_TOP_RADIUS_FRACTION = 0.15;
@@ -171,11 +185,14 @@ const LCA_FLOOR_UP_RELATIVE = -0.5;
 /** 底での対側壁への到達率。LCAはRCAより深く壁に当てる。 */
 const RCA_FLOOR_WALL_FRACTION = 0.7;
 const LCA_FLOOR_WALL_FRACTION = 0.95;
-/** 反転点(フック)の高さ(底から入口部の高さ=0までの間の、底からの距離の割合)。 */
+/** 反転点(フック)の高さ(底の高さから入口部の高さ=0までの間の、底からの距離の割合)。壁基準のwallHookPointの計算にのみ使う。 */
 const HOOK_UP_RELATIVE_FRACTION = 0.55;
-/** 反転点の角度(対側壁の角度から対象入口部自身の角度へ、この割合だけ回転させる)。 */
+/** 反転点の角度(対側壁の角度から対象入口部自身の角度へ、この割合だけ回転させる)。壁基準のwallHookPointの計算にのみ使う。 */
 const HOOK_ANGLE_BLEND = 0.65;
+/** 壁基準のwallHookPointの到達率。 */
 const HOOK_RADIUS_FRACTION = 0.4;
+/** wallHookPoint(壁基準)から対象入口部自身の実際の位置(ostiumPosition)へ、直線補間で寄せる割合。 */
+const HOOK_OSTIUM_BLEND = 0.4;
 /**
  * TOP/MID_DESCENT/FLOOR(底)の角度も、対側壁の角度(frame.rcaAngle/leftAngle、
  * RCA目標かLCA目標かの2択でしか変わらない)から対象冠動脈自身の角度(ownAngle)へ、
@@ -230,6 +247,23 @@ const CORRECTION_MAX_ITERATIONS = 60;
  * 無理に押し出すと「先端が入口部にエンゲージしている」という前提が崩れてしまう。
  */
 const TIP_CORRECTION_GUARD_MULTIPLIER = 1.5;
+/**
+ * 心筋干渉補正(ensurePathClearsHeartMesh)のガード距離は、通常はTIP_CORRECTION_GUARD_MULTIPLIER
+ * ベースのtipGuardDistance(オスティウムのごく近傍のみ)で十分だが、HOOKから先端までの
+ * 区間(実際には未モデル化のLMT——大動脈壁からLAD/LCXの分岐点まで—— に相当する)は、
+ * この関数が「心筋メッシュの内側」と判定しうる、心臓表面に沿った領域を通る。
+ * moveOutsideHeartMeshは心臓の重心から見た放射方向へ点を押し出すため、凹んだ表面
+ * 形状の近くではこの押し出しが何度も繰り返されて大きく迂回し、経路が一点だけ大きく
+ * 跳ね上がって見える不具合になっていた(実測: LCXでY座標が0.7付近から1.2付近まで
+ * 1点間隔で跳ね上がっていた——heartMeshをnullにして同じ補正を無効化すると、この
+ * 跳躍は完全に消え、元のCatmullRom曲線自体は滑らかであることを確認した)。
+ * HOOKから先端までの区間全体を、tipGuardDistanceと同じ理由(この区間は解剖学的に
+ * 心筋表面に沿っており、外へ逃がせる「外側」が実質存在しない)でガード対象から除外する
+ * ——ガード距離をHOOKからオスティウムまでの実際の距離ベースにすることで、対象血管ごとに
+ * 適切な範囲だけを除外する(RCAのようにHOOKが壁のすぐ近くにある場合はガード距離も
+ * 小さいままになる)。
+ */
+const HOOK_GUARD_MARGIN = 1.15;
 
 /** 心臓メッシュ(Mesh)ごとに計算済みの凸包を再利用するキャッシュ。凸包の計算はメッシュの
  * 全頂点を使うため軽くないが、対象血管やアクセスルートを切り替えるたびに毎回計算し直す
@@ -589,7 +623,19 @@ function buildCatheterApproach(
     // HOOK_ANGLE_BLENDの割合だけ回転させる(shortest-path方向、angularDiff参照)。
     const hookUpRelative = floorUpRelative * (1 - HOOK_UP_RELATIVE_FRACTION);
     const hookAngle = contralateralAngle + angularDiff(ownAngle, contralateralAngle) * HOOK_ANGLE_BLEND;
-    hookPoint = pointAtAngle(hookUpRelative, hookAngle, HOOK_RADIUS_FRACTION);
+    const wallHookPoint = pointAtAngle(hookUpRelative, hookAngle, HOOK_RADIUS_FRACTION);
+    // 壁基準のフック位置(wallHookPoint)を、対象入口部自身の実際の位置(ostiumPosition)へ
+    // HOOK_OSTIUM_BLENDの割合だけ寄せる(直線補間)。LAD/LCXは解剖学的にLMT分岐後の
+    // 構造のため、実際の入口部は壁からかなり外側(distanceFromAxis/evaluateAorticRootRadius
+    // の比が1.6前後)にある——壁基準の到達率(HOOK_RADIUS_FRACTION=0.4、壁の内側)の
+    // ままだと、フックから先端(tipAlignmentPoint→ostiumPosition)までのごく短い区間
+    // だけで壁内から壁の1.6倍外側までの半径変化を一気に埋めることになり、そこだけ
+    // 不自然に急激に膨らんで見える不具合になっていた(ユーザー報告:「カテーテルが
+    // 上に飛び上がってしまっている」——実測でも、この区間だけ内腔到達率が0.95→1.59
+    // まで1点間隔で跳ね上がっていたことを確認した)。壁基準の点と実際の入口部の位置を
+    // 直接(半径・高さ・角度をそれぞれ別々に扱うのではなく)直線補間することで、
+    // どの成分についても不連続な跳躍が起きないようにする。
+    hookPoint = wallHookPoint.lerp(ostiumPosition, HOOK_OSTIUM_BLEND);
 
     bulgePoint = floorPoint;
     lumenPoints = [topPoint, midDescentPoint];
@@ -735,13 +781,16 @@ function buildCatheterApproach(
   // (ensurePathClearsHeartMesh)を行う——後者は内腔内と確定した点を対象外にする
   // ため、順序を逆にすると2つの補正が競合しうる(isWithinAorticRootLumenのコメント参照)。
   if (heartMesh) {
+    // HOOK_GUARD_MARGINのコメント参照: HOOKから先端までの区間(未モデル化のLMTに相当)は
+    // 心筋メッシュとの干渉補正の対象から除外する。
+    const heartMeshGuardDistance = hookPoint ? Math.max(tipGuardDistance, hookPoint.distanceTo(ostiumPosition) * HOOK_GUARD_MARGIN) : tipGuardDistance;
     densePoints = ensurePathClearsHeartMesh(
       densePoints,
       ostiumPosition,
       heartMesh,
       heartCentroid,
       heartScale,
-      tipGuardDistance,
+      heartMeshGuardDistance,
       aorticRootFrame,
     );
   }
