@@ -1294,6 +1294,38 @@ const BRACHIOCEPHALIC_LENGTH_FRACTION = 2.2;
 const LEFT_COMMON_CAROTID_LENGTH_FRACTION = 1.2;
 const LEFT_SUBCLAVIAN_LENGTH_FRACTION = 1.3;
 /**
+ * 3分枝それぞれが実際に伸びる方向(frame.axis(頭側)・ARCH_LEFT_DIRECTION(解剖学的左)・
+ * ARCH_POSTERIOR_DIRECTION(解剖学的後方)の合成、正規化して使う)。
+ *
+ * 以前は弓部カーブ自体の局所接線、または弓全体の弦の向き(archDirection、archApexが
+ * 左・後方に大きくオフセットされているため、必然的に左・後方寄りの向きになる)を
+ * そのまま(または局所接線とブレンドして)使っていた。この方式だと3分枝全員が
+ * 「弓が曲がっていく先」に引きずられ、実際の解剖のように扇状に開かず、ほぼ平行な
+ * 3本の管が束になって同じ方向(左・後方寄り)を向くだけになっていた(Playwrightで
+ * 目視確認——上から見ると3本がほとんど重なって見える)。
+ *
+ * 実際の解剖では3分枝はそれぞれ別の方向を向く:
+ *   - 腕頭動脈: 右総頸動脈・右鎖骨下動脈へ分岐するため右側(解剖学的左と逆方向)へ
+ *     大きく開きながら上行する。3分枝の中で唯一、弓の湾曲方向(左)と逆側に開く。
+ *   - 左総頸動脈: ほぼ真上(頭側)へ、左右にはわずかしか傾かない。
+ *   - 左鎖骨下動脈: 上行しつつ、弓自体の湾曲(左・後方)よりもさらに強く左・後方へ
+ *     開き、左肩・左上肢へ向かう(3分枝の中で最も左・後方寄り)。
+ * この3方向を、それぞれ独立したUP/LEFT(またはRIGHT)/POSTERIOR(またはANTERIOR)の
+ * 合成比率として明示的に定義することで、実際の解剖のように3分枝が扇状に分かれる
+ * ようにする(以前のように弓の局所形状に従属させない)。起点は引き続き弓部カーブ上
+ * (BRACHIOCEPHALIC_ORIGIN_T_FRACTION等)のままとし、そこから先の伸びる向きだけを
+ * 各分枝固有のものにする。
+ */
+const BRACHIOCEPHALIC_UP_FRACTION = 1.0;
+const BRACHIOCEPHALIC_RIGHT_FRACTION = 0.4;
+const BRACHIOCEPHALIC_ANTERIOR_FRACTION = 0.1;
+const LEFT_COMMON_CAROTID_UP_FRACTION = 1.0;
+const LEFT_COMMON_CAROTID_LEFT_FRACTION = 0.12;
+const LEFT_COMMON_CAROTID_ANTERIOR_FRACTION = 0.05;
+const LEFT_SUBCLAVIAN_UP_FRACTION = 0.8;
+const LEFT_SUBCLAVIAN_LEFT_FRACTION = 0.6;
+const LEFT_SUBCLAVIAN_POSTERIOR_FRACTION = 0.5;
+/**
  * 弓部・下行大動脈の断面半径比(sinusRadius基準、上行大動脈終端の1.15から弓頂部・
  * 下行開始・下行終端にかけて緩やかに先細りさせる——実測比の目安として、弓部は
  * 上行大動脈とほぼ同径〜やや細め、下行大動脈はさらに細くなる)。
@@ -1359,41 +1391,39 @@ export function computeAorticArchControlPoints(frame: AorticRootFrame, heartScal
     .addScaledVector(ARCH_LEFT_DIRECTION, DESCENDING_START_LEFT_FRACTION * heartScale)
     .addScaledVector(ARCH_POSTERIOR_DIRECTION, DESCENDING_START_POSTERIOR_FRACTION * heartScale);
   const descendingEnd = descendingStart.clone().addScaledVector(frame.axis, -DESCENDING_LENGTH_FRACTION * heartScale);
-  const archDirection = archApex.clone().sub(ascendingEnd).normalize();
 
   const curve = buildCatmullRomFromPrimaryPoints(ascendingApproach, ascendingEnd, archApex, descendingStart, descendingEnd);
   const brachiocephalicOrigin = curve.getPoint(toArchCurveT(BRACHIOCEPHALIC_ORIGIN_T_FRACTION));
   const leftCommonCarotidOrigin = curve.getPoint(toArchCurveT(LEFT_COMMON_CAROTID_ORIGIN_T_FRACTION));
   const leftSubclavianOrigin = curve.getPoint(toArchCurveT(LEFT_SUBCLAVIAN_ORIGIN_T_FRACTION));
-  // 腕頭動脈・左総頸動脈は、起点における弓部カーブ自体の接線方向(curve.getTangent)を
-  // 基準に延ばす——起点がascendingEndに近く、カーブ自体がまだ緩やかにしか曲がっていない
-  // 位置にあるため、固定方向(archDirection、弓全体の弦の向き)をそのまま使うと起点での
-  // カーブの向きと大きくずれ、分枝がその場で鋭く折れ曲がる(いびつな「フック」状)に
-  // 見えることが実測(Playwrightで確認)で判明した。
-  //
-  // 腕頭動脈は起点がascendingEndに最も近く(局所接線がほぼ弓部本体の進行方向と一致する)、
-  // 純粋に局所接線だけを使うと弓部本体とほぼ同じ経路をたどってしまい、分枝が本体の管に
-  // 隠れて見えなくなる(実測・Playwrightで確認)。局所接線に固定方向(archDirection)を
-  // 半分ブレンドすることで、起点での折れ曲がりを避けつつ、弓部本体から十分な角度で
-  // 分かれて見えるようにする。左総頸動脈は起点が弓頂部に近く、局所接線の時点で既に
-  // 弓部本体から十分離れた向きになるため、ブレンドは不要(純粋な局所接線のまま)。
-  //
-  // 左鎖骨下動脈だけは例外的に固定方向(archDirection)のままにする——起点が弓頂部を
-  // 過ぎた位置にあり、そこでの局所接線は下行大動脈側(下向き)を向いてしまうため、
-  // 局所接線を使うと上肢へ向かうはずの分枝が下行大動脈に沿うように折れて見えてしまう。
-  const BRACHIOCEPHALIC_TANGENT_BLEND = 0.75;
-  const brachiocephalicDirection = curve
-    .getTangent(toArchCurveT(BRACHIOCEPHALIC_ORIGIN_T_FRACTION))
-    .lerp(archDirection, BRACHIOCEPHALIC_TANGENT_BLEND)
+  // 3分枝それぞれ固有の方向(BRACHIOCEPHALIC_UP_FRACTION等のコメント参照)。以前は
+  // 弓部カーブ自体の局所接線や弓全体の弦の向き(archDirection)に従属させていたため、
+  // 3分枝がほぼ平行な束になり、実際の解剖のような扇状の分かれ方に見えなかった
+  // (Playwrightで目視確認)。
+  const brachiocephalicDirection = new Vector3()
+    .addScaledVector(frame.axis, BRACHIOCEPHALIC_UP_FRACTION)
+    .addScaledVector(ARCH_LEFT_DIRECTION, -BRACHIOCEPHALIC_RIGHT_FRACTION)
+    .addScaledVector(ARCH_POSTERIOR_DIRECTION, -BRACHIOCEPHALIC_ANTERIOR_FRACTION)
     .normalize();
-  const leftCommonCarotidDirection = curve.getTangent(toArchCurveT(LEFT_COMMON_CAROTID_ORIGIN_T_FRACTION)).normalize();
+  const leftCommonCarotidDirection = new Vector3()
+    .addScaledVector(frame.axis, LEFT_COMMON_CAROTID_UP_FRACTION)
+    .addScaledVector(ARCH_LEFT_DIRECTION, LEFT_COMMON_CAROTID_LEFT_FRACTION)
+    .addScaledVector(ARCH_POSTERIOR_DIRECTION, -LEFT_COMMON_CAROTID_ANTERIOR_FRACTION)
+    .normalize();
+  const leftSubclavianDirection = new Vector3()
+    .addScaledVector(frame.axis, LEFT_SUBCLAVIAN_UP_FRACTION)
+    .addScaledVector(ARCH_LEFT_DIRECTION, LEFT_SUBCLAVIAN_LEFT_FRACTION)
+    .addScaledVector(ARCH_POSTERIOR_DIRECTION, LEFT_SUBCLAVIAN_POSTERIOR_FRACTION)
+    .normalize();
   const brachiocephalicEnd = brachiocephalicOrigin
     .clone()
     .addScaledVector(brachiocephalicDirection, BRACHIOCEPHALIC_LENGTH_FRACTION * heartScale);
   const leftCommonCarotidEnd = leftCommonCarotidOrigin
     .clone()
     .addScaledVector(leftCommonCarotidDirection, LEFT_COMMON_CAROTID_LENGTH_FRACTION * heartScale);
-  const leftSubclavianEnd = leftSubclavianOrigin.clone().addScaledVector(archDirection, LEFT_SUBCLAVIAN_LENGTH_FRACTION * heartScale);
+  const leftSubclavianEnd = leftSubclavianOrigin
+    .clone()
+    .addScaledVector(leftSubclavianDirection, LEFT_SUBCLAVIAN_LENGTH_FRACTION * heartScale);
 
   return {
     ascendingApproach,
