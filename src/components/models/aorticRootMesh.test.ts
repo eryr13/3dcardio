@@ -353,10 +353,10 @@ describe("computeAorticArchControlPoints", () => {
 });
 
 describe.each([
-  ["brachiocephalic", buildBrachiocephalicBranchGeometry, sampleAorticBrachiocephalicBranch, "brachiocephalicOrigin"] as const,
-  ["left common carotid", buildLeftCommonCarotidBranchGeometry, sampleAorticLeftCommonCarotidBranch, "leftCommonCarotidOrigin"] as const,
-  ["left subclavian", buildLeftSubclavianBranchGeometry, sampleAorticLeftSubclavianBranch, "leftSubclavianOrigin"] as const,
-])("%s branch geometry", (_label, buildGeometry, sampleBranch, originKey) => {
+  ["brachiocephalic", buildBrachiocephalicBranchGeometry, sampleAorticBrachiocephalicBranch] as const,
+  ["left common carotid", buildLeftCommonCarotidBranchGeometry, sampleAorticLeftCommonCarotidBranch] as const,
+  ["left subclavian", buildLeftSubclavianBranchGeometry, sampleAorticLeftSubclavianBranch] as const,
+])("%s branch geometry", (_label, buildGeometry, sampleBranch) => {
   const frame = makeFrame({ sinusRadius: 0.6 });
 
   it("returns a non-empty tube geometry", () => {
@@ -364,40 +364,107 @@ describe.each([
     expect(geometry.attributes.position.count).toBeGreaterThan(0);
   });
 
-  it("starts almost exactly at its own origin on the arch (no gap from the arch, same regression as buildAorticArchGeometry)", () => {
+  // Real full-arch tube (ascendingEnd -> archApex -> descendingEnd), used by both regression
+  // tests below to check the branch's rendered geometry against the arch's *actual* 3D tube
+  // surface (not a proxy straight-line distance from the origin, which doesn't account for the
+  // branch's direction being oblique to the trunk's local outward normal -- see
+  // findBranchClearanceFraction's comment in aorticRootMesh.ts for why the previous, simpler
+  // distance-from-origin proxy under-trimmed the branch and still let it visibly plunge into the
+  // trunk tube). Must cover the full arch, not just the ascending trunk (ascendingEnd ->
+  // archApex): the left subclavian branches off past archApex, on the descending side, so a
+  // trunk-only reference has no nearby points there and produces a meaningless "gap" measurement.
+  const heartScaleForTrunk = 2.5;
+  const trunkSampleCount = 60;
+  const descendingSampleCountForTest = 60;
+  const trunkPointsRaw = sampleAorticArchTrunk(frame, heartScaleForTrunk, trunkSampleCount, ARCH_TRUNK_T_FRACTION);
+  const trunkRadiiRaw = trunkPointsRaw.map((_, i) => evaluateAorticArchRadius(frame, (i / trunkSampleCount) * ARCH_TRUNK_T_FRACTION));
+  const descendingPointsRaw = sampleAorticDescendingBranch(frame, heartScaleForTrunk, descendingSampleCountForTest);
+  const descendingRadiiRaw = descendingPointsRaw.map((_, i) =>
+    evaluateAorticArchRadius(frame, ARCH_TRUNK_T_FRACTION + (i / descendingSampleCountForTest) * (1 - ARCH_TRUNK_T_FRACTION)),
+  );
+  const trunkPointsForTest = [...trunkPointsRaw, ...descendingPointsRaw.slice(1)];
+  const trunkRadiiForTest = [...trunkRadiiRaw, ...descendingRadiiRaw.slice(1)];
+
+  it("does not start buried inside the arch trunk's own tube (regression: branch tube visibly embedded/sunk inside the trunk)", () => {
+    // For every vertex of the branch's rendered geometry, and every point along the real trunk
+    // tube, the vertex must not be deep inside the trunk's local radius there -- i.e. no part of
+    // the branch mesh renders inside the solid trunk volume (reported by the user with a
+    // screenshot: the branch tube's open cross-section was visible *inside* the arch).
     const heartScale = 2.5;
     const geometry = buildGeometry(frame, heartScale);
-    const origin = computeAorticArchControlPoints(frame, heartScale)[originKey];
     const pos = geometry.attributes.position as BufferAttribute;
-    let minDist = Infinity;
     const v = new Vector3();
-    for (let i = 0; i < pos.count; i++) {
+    let worstPenetration = 0;
+    // Only the rings near the branch's rendered *start* are relevant here -- that junction is what
+    // the original bug (and this regression test) is about. Checking the branch's entire length
+    // would also flag a branch's far end passing near some unrelated point of the trunk's own
+    // curve later on, which is a different (and not necessarily meaningful) concern.
+    const startVertexCount = Math.min(pos.count, 36);
+    for (let i = 0; i < startVertexCount; i++) {
       v.fromBufferAttribute(pos, i);
-      minDist = Math.min(minDist, v.distanceTo(origin));
+      for (let j = 0; j < trunkPointsForTest.length; j++) {
+        const penetration = trunkRadiiForTest[j] - v.distanceTo(trunkPointsForTest[j]);
+        worstPenetration = Math.max(worstPenetration, penetration);
+      }
     }
-    const archApexRadius = 1.03 * (frame.sinusRadius / 1.35); // ARCH_RADIUS_RATIOS[1]
-    expect(minDist).toBeLessThan(archApexRadius * 1.3);
+    // The fix intentionally lets the branch's rendered ring *straddle* the trunk's real surface
+    // (like a real pipe fitting: partially embedded on the side facing the trunk, clear on the far
+    // side) rather than floating entirely outside it -- a small amount of embedding on one side is
+    // far less visually objectionable than a visible gap all the way around, and is what an actual
+    // vessel junction looks like. The per-branch clearance window (tuned empirically against the
+    // real heart-realistic.glb geometry, see BRACHIOCEPHALIC/LEFT_COMMON_CAROTID/LEFT_SUBCLAVIAN_
+    // CLEARANCE_WINDOW_HALF_WIDTH) straddles by up to roughly half a trunk radius on this test's
+    // synthetic frame; allow that while still catching the original bug's severity (branch embedded
+    // by close to a *full* trunk radius, i.e. barely trimmed at all).
+    expect(worstPenetration).toBeLessThan(trunkRadiiForTest[0] * 0.6);
+  });
+
+  it("starts close enough to the trunk's real surface that there is no visible gap between branch and trunk", () => {
+    const heartScale = 2.5;
+    const geometry = buildGeometry(frame, heartScale);
+    const pos = geometry.attributes.position as BufferAttribute;
+    const v = new Vector3();
+    // Distance from the branch's very first rendered ring to the nearest point on the trunk's own
+    // centerline (not just its origin point), and the trunk's own local radius there -- this is
+    // the actual "does it look attached" measure, robust to a branch running somewhat
+    // tangentially (rather than radially outward) before it clears the trunk's surface, which
+    // legitimately requires a larger absolute gap for some branch directions than others (see
+    // findBranchClearanceFraction's comment for why a single generic distance threshold, used by
+    // the previous, simpler approximation, doesn't work here).
+    let minDistFirstRing = Infinity;
+    let nearestTrunkRadius = 0;
+    const firstRingVertexCount = Math.min(pos.count, 20);
+    for (let i = 0; i < firstRingVertexCount; i++) {
+      v.fromBufferAttribute(pos, i);
+      for (let j = 0; j < trunkPointsForTest.length; j++) {
+        const dist = v.distanceTo(trunkPointsForTest[j]);
+        if (dist < minDistFirstRing) {
+          minDistFirstRing = dist;
+          nearestTrunkRadius = trunkRadiiForTest[j];
+        }
+      }
+    }
+    expect(minDistFirstRing).toBeLessThan(nearestTrunkRadius * 2);
   });
 
   it("is noticeably narrower than the aortic arch itself (real great vessels are much narrower than the aorta)", () => {
-    // Check the branch's actual cross-sectional radius (perpendicular distance from vertices to
-    // its own centerline) directly, rather than comparing bounding boxes (an unreliable proxy for
-    // a tube whose own long axis isn't grid-aligned).
+    // Check the branch's actual cross-sectional radius (perpendicular distance from each vertex to
+    // the *nearest point on its own centerline*, densely sampled) directly, rather than comparing
+    // bounding boxes or a single straight chord between the branch's endpoints -- the branch now
+    // curves smoothly away from the arch trunk's own tangent at its origin (tangent-continuity fix
+    // for the seam kink reported by the user), so a straight origin-to-end chord is no longer a
+    // valid proxy for "distance from the branch's own centerline".
     const heartScale = 2.5;
-    const points = sampleBranch(frame, heartScale, 20);
-    const origin = points[0];
-    const axis = points[points.length - 1].clone().sub(origin).normalize();
+    const centerline = sampleBranch(frame, heartScale, 200);
     const branchGeometry = buildGeometry(frame, heartScale);
     const pos = branchGeometry.attributes.position as BufferAttribute;
     let maxRadius = 0;
     const v = new Vector3();
-    const offset = new Vector3();
     for (let i = 0; i < pos.count; i++) {
       v.fromBufferAttribute(pos, i);
-      offset.copy(v).sub(origin);
-      const alongAxis = axis.clone().multiplyScalar(offset.dot(axis));
-      const perpDistance = offset.clone().sub(alongAxis).length();
-      maxRadius = Math.max(maxRadius, perpDistance);
+      let minDistToCenterline = Infinity;
+      for (const c of centerline) minDistToCenterline = Math.min(minDistToCenterline, v.distanceTo(c));
+      maxRadius = Math.max(maxRadius, minDistToCenterline);
     }
     const archApexRadius = 1.03 * (frame.sinusRadius / 1.35); // ARCH_RADIUS_RATIOS[1], the aorta's own radius there
     expect(maxRadius).toBeLessThan(archApexRadius * 0.6);

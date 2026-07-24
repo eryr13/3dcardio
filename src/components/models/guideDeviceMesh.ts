@@ -375,6 +375,284 @@ function polylineLength(points: Vector3[]): number {
 }
 
 /**
+ * pointsの各内部点における局所曲率ベクトル(隣接2区間の単位接線の差unitIn-unitOutを、
+ * 前後区間の平均弧長で割ったもの)を返す。大きさは真の曲率(単位弧長あたりの向きの
+ * 変化量、たとえば半径Rの円弧なら1/R)に相当する——鋭く曲がっている箇所ほど大きい。
+ * 向きは局所的な湾曲の外側(凸側)を向く(区間が右へ曲がればベクトルは左を向く、が
+ * 常に「湾曲の外側」を向く、というのがこのベクトルの幾何学的な意味——導出は
+ * pressAgainstOuterWallのコメント参照)。先頭・末尾は隣接区間が定義できないため
+ * ゼロベクトルにする。配列の前後を反転しても値は変わらない(unitIn/unitOutが入れ替わり
+ * 符号が2回反転して打ち消し合うため)、そのため呼び出し側は経路の向き(体外側→大動脈基部
+ * 側か、その逆か)を気にせず使ってよい。
+ *
+ * 平均弧長で割る理由: sampleAorticArchTrunk/sampleAorticDescendingBranchが返す点列は
+ * 論理t値に対して等間隔なだけで、弧長に対しては等間隔ではない(CatmullRomの弧長は
+ * 論理tに対して一様ではなく、特に湾曲がきつい弓頂部付近で1ステップあたりの弧長が
+ * 大きく変動する)。unitIn-unitOutをそのまま(弧長で正規化せずに)使うと、これは
+ * 「1サンプルあたりの向きの変化量」であり、同じ真の曲率でもサンプル間隔が広いほど
+ * 大きな値になってしまう——実測で、サンプリングの粗密が変わる箇所(弓頂部そのものや、
+ * CatmullRomの弧長が急に変化する区間)で、実際には滑らかな曲線に対して見かけ上の
+ * 曲率スパイクが生じることを確認した(弓頂部での過大な折れと、湾曲とは無関係な
+ * 区間での見かけ上の折れの両方)。平均弧長で割ることで、真の(サンプリング密度に
+ * 依存しない)曲率を得られ、この不具合が構造的に起こらなくなる。
+ */
+function computeCurvatureVectors(points: Vector3[]): Vector3[] {
+  const vectors = points.map(() => new Vector3());
+  for (let i = 1; i < points.length - 1; i++) {
+    const segmentIn = points[i].clone().sub(points[i - 1]);
+    const segmentOut = points[i + 1].clone().sub(points[i]);
+    const lengthIn = segmentIn.length();
+    const lengthOut = segmentOut.length();
+    if (lengthIn < 1e-9 || lengthOut < 1e-9) continue;
+    const unitIn = segmentIn.multiplyScalar(1 / lengthIn);
+    const unitOut = segmentOut.multiplyScalar(1 / lengthOut);
+    const averageLength = (lengthIn + lengthOut) / 2;
+    vectors[i].copy(unitIn).sub(unitOut).multiplyScalar(1 / averageLength);
+  }
+  return vectors;
+}
+
+/** pointsのcomputeCurvatureVectors(平滑化前、生の値)の最大の大きさを返す。
+ * pressAgainstOuterWallのreferenceMaxMagnitude(呼び出し側が別の区間の基準値を
+ * 渡したい場合に使う)を求めるための補助。 */
+function computeMaxRawCurvatureMagnitude(points: Vector3[]): number {
+  let maxMagnitude = 0;
+  for (const vector of computeCurvatureVectors(points)) maxMagnitude = Math.max(maxMagnitude, vector.length());
+  return maxMagnitude;
+}
+
+/**
+ * 血管の中心線からどれだけ外側(大弯)へ寄せてカテーテルの経路とするかを、当てずっぽうの
+ * 定数ではなく、実際に内腔の壁に接するまでの量として解析的に求める。
+ *
+ * 物理的な根拠: ある程度の硬さを持つ実際のガイディングカテーテルは、まっすぐであろうと
+ * する(曲げ剛性に抗って曲がるのを嫌う)。大動脈弓のように内腔の中心線自体が大きく
+ * 湾曲している区間では、カテーテルは中心線ほど鋭くは曲がれないため、内腔の外側
+ * (大弯)の壁に押し付けられながら、中心線よりゆるやかな(=より直線に近い)経路を取る
+ * ——これは「経路長を最小化する」(たわんだ紐が湾曲の内側=小弯に寄る)のとは逆に、
+ * 「曲率(曲がりの鋭さ)を最小化する」ことに相当し、内腔という制約の中で実現できる
+ * 最小曲率の経路は、幾何学的に内腔の外側の壁面をなぞる経路になる(壁に接するまでは
+ * 直進し、壁に押し付けられた区間だけ壁なりに曲がる、という古典的な接触問題と同じ形)。
+ *
+ * 実装: 中心線の各点における局所曲率ベクトル(computeCurvatureVectors、向きは
+ * 湾曲の外側)へ、点列全体で共通の係数kを掛けてオフセットする。「共通の係数」で
+ * あることが重要——各点を独立に(局所的な曲率だけを見て)動かすと、曲率推定の
+ * 揺らぎやサンプリングの継ぎ目でオフセット量が不連続に変化し、経路全体としては
+ * 不自然な急な折れ曲がりになることが実測で分かっている(過去の実装の failure mode)。
+ * kは、最も鋭く曲がっている点(=局所曲率ベクトルが最大の点)で、ちょうど内腔の壁に
+ * 触れる直前(containmentMargin、壁との数値的な余裕)まで達するように解析的に決める
+ * ——「それ以上は物理的に壁が止める」という接触の条件をそのまま数式にしたものが
+ * containmentMargin = k * max(|curvatureVector|) であり、kについて解けば
+ * k = containmentMargin / max(|curvatureVector|) となる(曲率ベクトルの大きさは
+ * 各点の局所半径に掛けてからオフセット量にするため、半径は式から相殺されず正しく
+ * 反映される)。曲率がほぼ0の区間(直線に近い上行大動脈・下行大動脈・腕頭動脈)では
+ * 曲率ベクトル自体がほぼ0になるため、この点列はほとんど動かない。
+ *
+ * pointsの先頭・末尾付近(endpointTaperCount点分)は、オフセット量を0まで線形に
+ * 減衰させる。computeCurvatureVectorsは先頭・末尾そのものは定義上0を返すが、その
+ * 1つ内側の点では実際の曲率(0でないことが多い)がそのまま使われるため、末尾側で
+ * オフセット量が「非0→0」と1点だけで急に落ちることがある——この点列の直後に
+ * 別の(このオフセット処理を適用しない)点列を連結する呼び出し側(橈骨アプローチの
+ * 腕頭動脈直線区間など)では、この急な落ち込みが2点間の間隔だけ不自然に広がる形で
+ * 現れる。先頭・末尾に向けて滑らかに0へ減衰させることで、連結先が何であっても
+ * (別の点列でも、単に配列の端でも)継ぎ目がなだらかになることを保証する。
+ *
+ * pointsはそのまま(並べ直さず)使う——computeCurvatureVectors自体が弧長で正規化された
+ * 真の曲率を返すため、サンプリング密度が変化する箇所(弓頂部や、複数のsample関数を
+ * 連結した継ぎ目)でも汚染されない。
+ */
+const CATHETER_WALL_CONTACT_MARGIN = 0.9;
+/** pressAgainstOuterWallが先頭・末尾でオフセットを0まで線形に減衰させる区間の点数。 */
+const CATHETER_WALL_CONTACT_TAPER_COUNT = 5;
+/**
+ * 曲率ベクトル場を近傍平均で滑らかにする反復回数(pressAgainstOuterWall参照)。
+ * 実際のガイディングカテーテルは有限の曲げ剛性を持ち、無限に短い区間の曲率の
+ * 揺らぎに瞬時に反応するわけではなく、自身の剛性が支配するある程度の長さに
+ * わたって平均化された曲がり方に応じてしなう——単一の点だけが際立って鋭い
+ * (隣接点よりずっと大きい)曲率を持っていても、カテーテルはそこだけ瞬間的に
+ * 折れ曲がったりせず、周囲の区間全体でその曲がりを分け合う。この平滑化を
+ * 怠ると、computeCurvatureVectorsが弧長で正規化した「真の曲率」であっても
+ * なお残る離散化・サンプリングの点ごとの揺らぎ(平均化はバイアスは除くが
+ * ノイズそのものは除かない)が、大きな係数kでそのまま拡大されてしまい、
+ * 実測でオフセット後の経路に70度を超える折れ(通常の湾曲では見えるはずのない
+ * 急峻な二重の折れ)が生じることを確認した。
+ */
+const CATHETER_CURVATURE_SMOOTHING_PASSES = 6;
+
+function smoothVectorField(vectors: Vector3[], passes: number): Vector3[] {
+  let current = vectors.map((v) => v.clone());
+  for (let pass = 0; pass < passes; pass++) {
+    const next = current.map((v) => v.clone());
+    for (let i = 1; i < current.length - 1; i++) {
+      next[i] = current[i - 1].clone().add(current[i]).add(current[i + 1]).multiplyScalar(1 / 3);
+    }
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * kは平滑化「前」の生の曲率(rawCurvatureVectors)の最大値を基準に決める——平滑化後の
+ * 最大値を基準にすると、平滑化によって最大点自身の値が(近傍の小さい値と混ざって)
+ * 下がった分だけkが大きく再計算されてしまい、他の点のオフセットがその分だけ余計に
+ * 増幅されてしまう(実測: 橈骨アプローチの腕頭動脈分岐の継ぎ目付近で、平滑化前は
+ * 約98度だった見かけ上の折れが、平滑化後の最大値でkを引き直したことでかえって
+ * 約140度まで悪化する逆効果を確認した)。
+ *
+ * 生のkを平滑化後のベクトルに適用することには、副作用として構造的に嬉しい性質がある:
+ * 近傍平均(smoothVectorField)は凸結合(3点の平均)の反復であるため、平滑化後の
+ * どの点のベクトルの大きさも、平滑化前の最大値を超えることは数学的にあり得ない
+ * (三角不等式|a+b+c|/3 ≤ max(|a|,|b|,|c|)より)。したがって
+ * offset = k * smoothedVector * radii[i] は、containmentMargin*radii[i]を
+ * 追加のクランプ処理なしに常に下回ることが保証される——「壁を物理的に貫通できない」
+ * という制約が、後付けの補正ではなく計算の構造そのものから導かれる。
+ *
+ * referenceMaxMagnitude(省略可): kの基準となる最大曲率を、渡されたpoints自身の
+ * 最大値ではなく、呼び出し側が別途指定した値で置き換える。橈骨アプローチの幹区間
+ * (trunkPoints)は弓頂部よりずっと手前(BRACHIOCEPHALIC_ORIGIN_T_FRACTION)で
+ * 打ち切られており、その短い区間自体はほぼ直線に近い(実測でも1点あたりの折れが
+ * 1度未満)。この短い、ほとんど曲がっていない区間「自身」の中での最大値を基準にkを
+ * 決めてしまうと、その最大値自体が非常に小さいためkが不自然に大きくなり、点ごとの
+ * わずかな曲率のばらつきが増幅されて、実際には存在しない急な折れが生じる(実測で
+ * 確認: 大腿アプローチ(弓全体を対象にpressAgainstOuterWallを1回で適用)では起きず、
+ * 橈骨アプローチの幹区間だけ切り出して単独できを決めた場合にのみ発生)。弓全体
+ * (大腿アプローチが対象にする全区間)の生の最大曲率を共通の基準として渡すことで、
+ * 「この経路が壁に触れるとしたら、弓の中で最も鋭く曲がる箇所と同じだけの余裕度で
+ * 触れる」という一貫した物理的基準になり、ほとんど曲がっていない区間では
+ * (基準に対して相対的に小さい曲率のため)自然に小さいオフセットしか生じなくなる。
+ */
+function pressAgainstOuterWall(points: Vector3[], radii: number[], containmentMargin: number, referenceMaxMagnitude?: number): Vector3[] {
+  const rawCurvatureVectors = computeCurvatureVectors(points);
+  const curvatureVectors = smoothVectorField(rawCurvatureVectors, CATHETER_CURVATURE_SMOOTHING_PASSES);
+  let maxRawMagnitude = referenceMaxMagnitude ?? 0;
+  if (referenceMaxMagnitude === undefined) {
+    for (const vector of rawCurvatureVectors) maxRawMagnitude = Math.max(maxRawMagnitude, vector.length());
+  }
+  if (maxRawMagnitude < 1e-9) return points.map((p) => p.clone());
+  const k = containmentMargin / maxRawMagnitude;
+  const taperCount = Math.min(CATHETER_WALL_CONTACT_TAPER_COUNT, Math.floor((points.length - 1) / 2));
+  return points.map((point, i) => {
+    const edgeDistance = Math.min(i, points.length - 1 - i);
+    const taper = taperCount > 0 ? Math.min(1, edgeDistance / taperCount) : 1;
+    const rawOffset = curvatureVectors[i].clone().multiplyScalar(k * radii[i] * taper);
+    const maxOffsetLength = containmentMargin * radii[i];
+    if (rawOffset.length() > maxOffsetLength) rawOffset.setLength(maxOffsetLength);
+    return point.clone().add(rawOffset);
+  });
+}
+
+/**
+ * pressAgainstOuterWallは1本の滑らかな中心線(同一のbuildAorticArchCurve由来)を
+ * 前提に、単一の解析的なk(曲率最大点で壁に触れる量)で決めている。橈骨アプローチの
+ * 腕頭動脈のように、湾曲するtrunk(sampleAorticArchTrunk)と直線近似のbranch
+ * (sampleLinearArchBranch)を継ぎ足す場合、その継ぎ目には実際の血管の湾曲とは
+ * 無関係な、直線近似というモデル化そのものに由来する人為的な折れが残る(trunk単体で
+ * kを決めているため、pressAgainstOuterWall自身はこの継ぎ目を「知らない」)。
+ *
+ * これを解析的なkの再設計で吸収しようとする代わりに、経路全体に対して局所的な
+ * 位置ベースの緩和(離散ラプラシアン平滑化+内腔クランプ)を少数回だけ追加で適用する。
+ * pressAgainstOuterWallが既に決めた「壁へ寄る」という大局的な形は、この程度の
+ * 反復回数では実質的に崩れない(低周波成分は緩和の影響をほぼ受けない)一方、
+ * 継ぎ目1点だけに集中する高周波の折れは、隣接点との平均へ寄せる緩和で直接的に
+ * 均される——relaxSemiRigidWire(ワイヤー側)と同じ考え方だが、内腔クランプの基準を
+ * オフセット後の自分自身ではなく真の中心線(centerlinePoints)からの距離にする
+ * ことで、pressAgainstOuterWallが既に壁ぎりぎりまで寄せた点を緩和がさらに
+ * 壁の外へ押し出してしまうことがないようにする。両端(体外側の起点・大動脈基部側の
+ * 終点)は固定する。
+ */
+const OUTER_PATH_SEAM_RELAX_ITERATIONS = 4;
+const OUTER_PATH_SEAM_RELAX_STIFFNESS = 0.5;
+
+function relaxOuterPathSeams(points: Vector3[], centerlinePoints: Vector3[], radii: number[], containmentMargin: number): Vector3[] {
+  if (points.length < 3) return points.map((p) => p.clone());
+  let current = points.map((p) => p.clone());
+  for (let iter = 0; iter < OUTER_PATH_SEAM_RELAX_ITERATIONS; iter++) {
+    const next = current.map((p) => p.clone());
+    for (let i = 1; i < current.length - 1; i++) {
+      const midpoint = current[i - 1].clone().add(current[i + 1]).multiplyScalar(0.5);
+      const laplacian = midpoint.sub(current[i]);
+      const candidate = current[i].clone().addScaledVector(laplacian, OUTER_PATH_SEAM_RELAX_STIFFNESS);
+      const maxOffsetLength = containmentMargin * radii[i];
+      const offset = candidate.clone().sub(centerlinePoints[i]);
+      if (offset.length() > maxOffsetLength) candidate.copy(centerlinePoints[i]).addScaledVector(offset.normalize(), maxOffsetLength);
+      next[i] = candidate;
+    }
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * aortaPoint(=ascendingEnd、弓部から降りてきた経路がここで大動脈基部の内腔へ入る)から
+ * topPoint(内腔上部)を経てmidDescentPointまでの区間は、従来は単に4点(aortaPoint,
+ * topPoint, midDescentPoint, bulgePoint)を通るCatmullRomの滑らかな補間曲線を
+ * そのまま経路として使っていた——つまり、大動脈弓と違って「壁との接触」を一切
+ * 考慮していなかった。しかしユーザー指摘の通り、ここも弓部と全く同じ接触問題のはずで、
+ * 実測でもaortaPoint(軸上の点)からtopPoint(軸から離れた特定の壁寄りの点)へ
+ * 急に向きを変える不自然な折れが確認された。ある程度の硬さを持つカテーテルは、
+ * 弓部から内腔へ入る際もやはり中心線ほど鋭くは曲がれず、内腔の壁に軽く押し付け
+ * られながらより緩やかな経路を取る、と考える方が物理的に妥当。
+ *
+ * pressAgainstOuterWall(曲率ベクトルをそのまま外側へ寄せる解析的な手法)をこの区間に
+ * 直接適用したところ、区間全体が定常的な平面内の湾曲ではなく(軸上→軸から離れた
+ * 特定角度への3次元的なひねりを伴う遷移のため)、曲率ベクトルの向き自体が点ごとに
+ * 大きく回転し、かえって細かい波打ち(見かけ上のさざ波状の折れ)が広範囲に増えて
+ * しまうことを実測で確認した——単一の解析的なk一発で押し出すこの手法は、大動脈弓の
+ * ような単純な平面的湾曲には適するが、この区間のような3次元的な遷移には合わない。
+ *
+ * 代わりに、継ぎ目の折れを均すために既に使っているrelaxOuterPathSeams(離散
+ * ラプラシアン平滑化+内腔クランプ、両端は固定)をそのままこの区間に転用する。
+ * ただし、単純にinnerRawPoints(aortaPoint起点)だけを対象にすると、aortaPoint
+ * そのものが対象配列の「先頭」になり、relaxOuterPathSeamsは両端を完全に固定する
+ * ため、肝心の折れの頂点(aortaPointそのものでの急な向きの変化)が一切動かせず、
+ * 実測でも折れが全く改善しないことを確認した——折れているのは「aortaPointの前後
+ * (弓部側の末尾とtopPoint側の先頭)の接線が食い違っている」ことそのものなので、
+ * aortaPoint自身も含めて動かせる区間にする必要がある。そこで、体外側の経路
+ * (outerPathPoints)の末尾側も一定区間分ここに含め、aortaPointを対象配列の
+ * 内部の1点として扱う(固定するのは弓部側に十分入った点と、floorPoint側の
+ * カットオフ点の両端のみ)。反復的な近傍平均は曲率ベクトルの向きのノイズを増幅せず、
+ * 区間全体の折れをなだらかに分散させるだけなので、pressAgainstOuterWallで起きた
+ * 波打ちが起きない。内腔半径(evaluateAorticRootRadius、洞の三つ葉形状を反映)で
+ * クランプしているため、なだらかにする過程で経路が内腔の壁へ寄っていく箇所では
+ * その壁面(のcontainmentMargin倍の位置)で止まる——結果として、直線的に均すだけ
+ * でなく、壁に触れるところでは実際に壁沿いになる、という接触問題としての性質も
+ * 保たれる。
+ *
+ * 対側壁バックアップ・反転(floorPoint以降)はユーザーが「エンゲージ時の屈曲は許容する」
+ * と明示した区間であり、今回の対象外——innerRawPoints側はupRelativeが
+ * MID_DESCENT_UP_RELATIVEまで下がる手前までに留める。
+ */
+const ROOT_ENTRY_OUTER_TAIL_COUNT = 12;
+
+function pressRootEntryAgainstWall(
+  outerPathPoints: Vector3[],
+  innerRawPoints: Vector3[],
+  frame: AorticRootFrame,
+): { outerPathPoints: Vector3[]; innerRawPoints: Vector3[] } {
+  let sliceEnd = innerRawPoints.length - 1;
+  for (let i = 0; i < innerRawPoints.length; i++) {
+    if (projectOntoFrame(frame, innerRawPoints[i]).upRelative <= MID_DESCENT_UP_RELATIVE) {
+      sliceEnd = i;
+      break;
+    }
+  }
+  const outerTailCount = Math.min(ROOT_ENTRY_OUTER_TAIL_COUNT, outerPathPoints.length - 1);
+  if (sliceEnd < 3 || outerTailCount < 1) {
+    return { outerPathPoints, innerRawPoints: innerRawPoints.map((p) => p.clone()) };
+  }
+  const outerTailStart = outerPathPoints.length - 1 - outerTailCount;
+  // outerPathPoints末尾(=aortaPoint)とinnerRawPoints[0](=aortaPointの複製)は同じ点なので、
+  // combinedにはouterPathPoints側の分だけを入れ、aortaPoint自体はinnerRawPoints側から1回だけ含める。
+  const combined = [...outerPathPoints.slice(outerTailStart, outerPathPoints.length - 1), ...innerRawPoints.slice(0, sliceEnd + 1)];
+  const radii = combined.map((point) => evaluateAorticRootRadius(frame, point));
+  const relaxed = relaxOuterPathSeams(combined, combined, radii, CATHETER_WALL_CONTACT_MARGIN);
+  const newAortaPoint = relaxed[outerTailCount];
+  const newOuterPathPoints = [...outerPathPoints.slice(0, outerTailStart), ...relaxed.slice(0, outerTailCount), newAortaPoint];
+  const newInnerRawPoints = [newAortaPoint, ...relaxed.slice(outerTailCount + 1), ...innerRawPoints.slice(sliceEnd + 1).map((p) => p.clone())];
+  return { outerPathPoints: newOuterPathPoints, innerRawPoints: newInnerRawPoints };
+}
+
+/**
  * pointの大動脈基部フレームからの水平距離(distanceFromAxis)が、その高さ・角度に
  * おける可視化形状の局所半径(evaluateAorticRootRadius、AORTIC_CONTAINMENT_SAFETY_MARGIN
  * を掛けたもの)を超えている場合、頭側方向の成分は保ったまま水平成分だけを縮めて
@@ -750,6 +1028,47 @@ function buildCatheterApproach(
     // (archApex、trunkPointsの終点=branchPointsの始点)は重複するため片方だけ残す。
     outerCenterlinePoints = [...trunkPoints, ...branchPoints.slice(1)].reverse();
     outerCenterlineRadii = [...trunkRadii, ...branchRadii.slice(1)].reverse();
+    // カテーテルが実際に通る点列は、真の中心線(outerCenterlinePoints)そのものではなく、
+    // pressAgainstOuterWallが解く「内腔の壁に接するまで外側(大弯)へ寄せた」点列
+    // (そちらのコメント参照)。
+    //
+    // 大腿アプローチ(trunk+descendingBranch)はどちらもbuildAorticArchCurveという
+    // 同一の滑らかな1本のカーブから直接切り出した点列なので、継ぎ目(archApex)を
+    // またいでも実際の湾曲がそのまま連続しており、連結してから1回で曲率を評価しても
+    // 問題ない。橈骨アプローチのbranch(腕頭動脈)は分枝自体の解剖学的な向きを持つ
+    // 独立した区間(3分枝が扇状に開く、computeAorticArchControlPoints参照)であり、
+    // trunkと同じ「弓の中心線」の一部として曲率を評価すべきものではないため、
+    // 引き続きtrunk単体(実際に弓が湾曲する区間のみ)に対してpressAgainstOuterWallを
+    // 適用し、branchには適用しない。
+    //
+    // 橈骨アプローチのtrunkは弓頂部よりずっと手前(BRACHIOCEPHALIC_ORIGIN_T_FRACTION)
+    // で打ち切られており、その短い区間自体はほぼ直線に近い(実測: 1点あたりの折れが
+    // 1度未満)。この短い区間「自身」の中での最大曲率を基準にk(壁へ寄せる量)を
+    // 決めてしまうと、その最大値自体が小さすぎるためkが不自然に大きくなり、
+    // わずかな曲率のばらつきが増幅されて実際には存在しない急な折れが生じることを
+    // 実測で確認した(pressAgainstOuterWallのreferenceMaxMagnitudeのコメント参照)。
+    // 大腿アプローチが対象にする弓全体(trunk+descendingBranch)の生の最大曲率を
+    // 共通の基準として渡すことで、この不具合を構造的に防ぐ。
+    const archWideCurvatureReference =
+      accessRoute === "radial"
+        ? computeMaxRawCurvatureMagnitude([
+            ...sampleAorticArchTrunk(frame, heartScale, TRUNK_SAMPLE_COUNT, ARCH_TRUNK_T_FRACTION),
+            ...sampleAorticDescendingBranch(frame, heartScale, DESCENDING_BRANCH_SAMPLE_COUNT).slice(1),
+          ])
+        : undefined;
+    const pressedOuterPathPoints =
+      accessRoute === "femoral"
+        ? pressAgainstOuterWall(outerCenterlinePoints, outerCenterlineRadii, CATHETER_WALL_CONTACT_MARGIN)
+        : [
+            ...pressAgainstOuterWall(trunkPoints, trunkRadii, CATHETER_WALL_CONTACT_MARGIN, archWideCurvatureReference),
+            ...branchPoints.slice(1),
+          ].reverse();
+    const outerPathPoints = relaxOuterPathSeams(
+      pressedOuterPathPoints,
+      outerCenterlinePoints,
+      outerCenterlineRadii,
+      CATHETER_WALL_CONTACT_MARGIN,
+    );
 
     const innerControlPoints = [
       aortaPoint,
@@ -765,10 +1084,17 @@ function buildCatheterApproach(
       CATHETER_CURVE_RESOLUTION - outerCenterlinePoints.length,
     );
     const innerRawPoints = innerCurve.getSpacedPoints(innerResolution);
-    const innerPoints = ensurePathStaysInsideAorticRoot(innerRawPoints, ostiumPosition, aorticRootFrame, tipGuardDistance, shape);
-    // outerCenterlinePointsの末尾とinnerPointsの先頭はどちらもaortaPointそのもの(重複)
+    const rootEntryPressed = pressRootEntryAgainstWall(outerPathPoints, innerRawPoints, frame);
+    const innerPoints = ensurePathStaysInsideAorticRoot(
+      rootEntryPressed.innerRawPoints,
+      ostiumPosition,
+      aorticRootFrame,
+      tipGuardDistance,
+      shape,
+    );
+    // outerPathPointsの末尾とinnerPointsの先頭はどちらもaortaPointそのもの(重複)
     // なので、結合時に片方だけ残す。
-    densePoints = [...outerCenterlinePoints, ...innerPoints.slice(1)];
+    densePoints = [...rootEntryPressed.outerPathPoints, ...innerPoints.slice(1)];
   } else {
     const curve = new CatmullRomCurve3(controlPoints);
     densePoints = curve.getSpacedPoints(CATHETER_CURVE_RESOLUTION);

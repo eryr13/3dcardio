@@ -1520,12 +1520,46 @@ export function sampleAorticDescendingBranch(frame: AorticRootFrame, heartScale:
   return points;
 }
 
-/** origin〜endの直線上の密なサンプル点(origin起点、end終点の順、両端を含む)。
- * 腕頭動脈・左総頸動脈・左鎖骨下動脈はいずれも実際の形状が直線(2点チューブ)なので、
- * この共通ヘルパーを3分枝それぞれのsample*関数から呼ぶ。 */
-function sampleLinearArchBranch(origin: Vector3, end: Vector3, sampleCount: number): Vector3[] {
+/**
+ * 3分枝(腕頭動脈・左総頸動脈・左鎖骨下動脈)の起点は弓部本体の中心線(curve)上の点
+ * だが、従来はそこから即座に固定方向(brachiocephalicDirection等)への直線として
+ * 描画・カテーテル経路化していた。この固定方向は弓自体の局所接線とは無関係に
+ * 選んだもの(3分枝が解剖学的に扇状に分かれて見えるよう個別に設定したもの——
+ * computeAorticArchControlPointsのコメント参照)なので、起点そのものでは接線が
+ * 一般に不連続になり、実際に「上行大動脈のあたりで不自然にくびれて見える」
+ * (ユーザー報告のスクリーンショットで確認、特に橈骨アプローチで顕著)原因になって
+ * いた。関節部だけを事後的に緩和で均すのではなく、起点の接線が弓本体の接線と
+ * 一致するように、分枝の形状自体をtangent-continuousな滑らかな曲線にする——
+ * 分枝の終点(brachiocephalicEnd等、扇状に開いた解剖学的な向き・長さ)はそのまま
+ * 維持しつつ、起点付近だけ弓本体の接線方向へなじませる。
+ */
+function getAorticArchTangentAt(frame: AorticRootFrame, heartScale: number, logicalT: number): Vector3 {
+  const curve = buildAorticArchCurve(frame, heartScale);
+  return curve.getTangent(toArchCurveT(logicalT)).normalize();
+}
+
+/** 分枝の起点付近で弓本体の接線になじませる区間の長さを、分枝自身の全長に対する
+ * 比率で決める(短すぎると接線の不連続が視認できるほど残り、長すぎると分枝の
+ * 扇状の開き方自体が弓に寄って見えてしまう)。 */
+const ARCH_BRANCH_TANGENT_BLEND_FRACTION = 0.35;
+
+/** origin(弓本体の中心線上の点)からend(分枝の解剖学的な終端)まで、起点でoriginTangent
+ * (弓本体の局所接線)にほぼ一致する接線を持つCatmullRomCurve3を組む(sampleBlendedArchBranch・
+ * sampleVisibleArchBranch共通)。originから一定距離originTangent方向へ進んだ点を経由点に
+ * することで、起点での接線がほぼoriginTangentと一致する(=弓本体との継ぎ目で折れない)。 */
+function buildBlendedArchBranchCurve(origin: Vector3, originTangent: Vector3, end: Vector3): CatmullRomCurve3 {
+  const blendDistance = origin.distanceTo(end) * ARCH_BRANCH_TANGENT_BLEND_FRACTION;
+  const blendPoint = origin.clone().addScaledVector(originTangent, blendDistance);
+  return new CatmullRomCurve3([origin, blendPoint, end]);
+}
+
+/** origin(弓本体の中心線上の点)からend(分枝の解剖学的な終端)までの密なサンプル点
+ * (origin起点、end終点の順、両端を含む)。起点での接線がほぼoriginTangentと一致する
+ * (=弓本体との継ぎ目で折れない)滑らかな曲線にする。 */
+function sampleBlendedArchBranch(origin: Vector3, originTangent: Vector3, end: Vector3, sampleCount: number): Vector3[] {
+  const curve = buildBlendedArchBranchCurve(origin, originTangent, end);
   const points: Vector3[] = [];
-  for (let i = 0; i <= sampleCount; i++) points.push(origin.clone().lerp(end, i / sampleCount));
+  for (let i = 0; i <= sampleCount; i++) points.push(curve.getPoint(i / sampleCount));
   return points;
 }
 
@@ -1536,21 +1570,24 @@ function sampleLinearArchBranch(origin: Vector3, end: Vector3, sampleCount: numb
  */
 export function sampleAorticBrachiocephalicBranch(frame: AorticRootFrame, heartScale: number, sampleCount: number): Vector3[] {
   const { brachiocephalicOrigin, brachiocephalicEnd } = computeAorticArchControlPoints(frame, heartScale);
-  return sampleLinearArchBranch(brachiocephalicOrigin, brachiocephalicEnd, sampleCount);
+  const originTangent = getAorticArchTangentAt(frame, heartScale, BRACHIOCEPHALIC_ORIGIN_T_FRACTION);
+  return sampleBlendedArchBranch(brachiocephalicOrigin, originTangent, brachiocephalicEnd, sampleCount);
 }
 
 /** 弓部カーブ上の起点から左総頸動脈の終端までの密なサンプル点(可視化専用、
  * カテーテル経路には使わない)。 */
 export function sampleAorticLeftCommonCarotidBranch(frame: AorticRootFrame, heartScale: number, sampleCount: number): Vector3[] {
   const { leftCommonCarotidOrigin, leftCommonCarotidEnd } = computeAorticArchControlPoints(frame, heartScale);
-  return sampleLinearArchBranch(leftCommonCarotidOrigin, leftCommonCarotidEnd, sampleCount);
+  const originTangent = getAorticArchTangentAt(frame, heartScale, LEFT_COMMON_CAROTID_ORIGIN_T_FRACTION);
+  return sampleBlendedArchBranch(leftCommonCarotidOrigin, originTangent, leftCommonCarotidEnd, sampleCount);
 }
 
 /** 弓部カーブ上の起点から左鎖骨下動脈の終端までの密なサンプル点(可視化専用、
  * カテーテル経路には使わない)。 */
 export function sampleAorticLeftSubclavianBranch(frame: AorticRootFrame, heartScale: number, sampleCount: number): Vector3[] {
   const { leftSubclavianOrigin, leftSubclavianEnd } = computeAorticArchControlPoints(frame, heartScale);
-  return sampleLinearArchBranch(leftSubclavianOrigin, leftSubclavianEnd, sampleCount);
+  const originTangent = getAorticArchTangentAt(frame, heartScale, LEFT_SUBCLAVIAN_ORIGIN_T_FRACTION);
+  return sampleBlendedArchBranch(leftSubclavianOrigin, originTangent, leftSubclavianEnd, sampleCount);
 }
 
 /**
@@ -1724,27 +1761,243 @@ function buildLinearArchBranchGeometry(points: Vector3[], radii: number[]): Buff
 }
 
 /**
+ * 3分枝(腕頭動脈・左総頸動脈・左鎖骨下動脈)のorigin(brachiocephalicOrigin等)は、
+ * 弓部大動脈の中心線(軸)上の点であり、その表面上の点ではない——sampleAorticArchTrunk
+ * の終点とcurve上で厳密に一致させる必要がある(トランクとの継ぎ目、buildCatheterApproach
+ * 参照)ため、この定義自体は変更できない。しかし可視化用のチューブをorigin(軸上の点)から
+ * そのまま描画すると、チューブの起点付近がまるごと弓部本体のチューブの内部に埋もれてしまい、
+ * 2つの不透明なチューブが互いにめり込んで見える(ユーザー報告のスクリーンショットで確認)
+ * ——カテーテルの細い中心線が大動脈の内腔を通ること自体は解剖学的に正しい(そちらは
+ * 意図通り)のに対し、こちらは「実体のある血管どうしがめり込んでいる」ように見える点が
+ * 異なり、修正すべき見た目の不具合である。
+ *
+ * 以前は「originから分枝自身の方向へ、その位置の弓本体の局所半径ぶん進んだ距離」を
+ * 弓の表面を抜け出す距離の近似として使っていたが、分枝の方向(3分枝が扇状に開くための
+ * 固定方向、computeAorticArchControlPoints参照)は弓本体の局所的な外向き法線と一般には
+ * 一致しないため、この近似では実際にはまだ弓本体の管の中にある区間まで描画してしまい、
+ * 分枝のチューブが弓の内部に潜り込んで見える不具合が残っていた(実測・目視で確認、
+ * 開いた断面が弓の内部に見える)。
+ *
+ * この修正では、分枝の方向に関わらず正しく弓の表面を抜け出す位置を求めるため、実際に
+ * 弓本体の管(単純な円形断面のチューブ)の外に出る位置を、密にサンプルした弓本体の
+ * 点列・局所半径との実距離で判定する(findBranchClearanceFraction)。
+ * origin自体やorigin基準の半径計算(evaluateAortic*Radius、fraction=0〜1)は変更しない
+ * (カテーテル経路のsample*関数・内腔検証は従来どおりfraction=0起点のまま)。
+ */
+const ARCH_BRANCH_CLEARANCE_SEARCH_COUNT = 40;
+/** findBranchClearanceFractionの粗探索で見つかった区間を、二分探索でさらに絞り込む反復回数
+ * (BRACHIOCEPHALIC_LENGTH_FRACTION等、分枝の全長は弓本体の局所半径よりずっと長いため、
+ * 粗探索の1刻みだけでも弓本体の半径と同程度かそれ以上の距離になりうる——実測・目視で、
+ * この粗さが原因で分枝の描画開始点が弓の表面を大きく超えて浮き、血管が「ちぎれて」
+ * 見える隙間ができることを確認した。1刻み分の区間をさらに細かく絞り込むことで、
+ * 実際に表面ぎりぎりの位置を精度良く求める)。 */
+const ARCH_BRANCH_CLEARANCE_REFINE_ITERATIONS = 24;
+/** 弓本体の管の外に出たと判定するまでの安全マージン。二分探索で表面ぎりぎりの位置を
+ * 精度良く求められるようになったため、以前(1.15)ほど大きな余裕は不要——大きすぎると
+ * 隙間として見えてしまう(実測で確認)。1.0だとちょうど接する位置になり、わずかな
+ * 数値誤差・弓本体側のポリゴン近似で再びめり込みかねないため、ごく小さな余裕だけ持たせる。 */
+const ARCH_BRANCH_CLEARANCE_SAFETY_MARGIN = 1.0;
+
+/** pointが弓本体の管の外側にあるかどうかを、branchRadiusAtPoint(その位置での分枝自身の
+ * 太さ)も考慮して判定する。findBranchClearanceFractionは分枝の中心線だけを弓本体の
+ * 中心線までの距離で判定していたが、実際に描画されるのは太さを持つチューブであり、
+ * 中心線が弓本体の表面ぎりぎりに達していても、分枝自身の半径ぶん内側の面はまだ弓本体の
+ * 内部に埋もれている——実測で、この分だけ埋め込みが残ることを確認した。弓本体の半径に
+ * 分枝自身の半径を加えた距離を基準にすることで、分枝の表面(中心線ではなく)が弓本体の
+ * 表面をちょうど抜け出す位置を求める。 */
+function branchPointClearsTrunk(
+  point: Vector3,
+  branchRadiusAtPoint: number,
+  trunkPoints: Vector3[],
+  trunkRadii: number[],
+): boolean {
+  for (let j = 0; j < trunkPoints.length; j++) {
+    if (point.distanceTo(trunkPoints[j]) < trunkRadii[j] * ARCH_BRANCH_CLEARANCE_SAFETY_MARGIN + branchRadiusAtPoint) return false;
+  }
+  return true;
+}
+
+/** branchCurve(fraction 0〜1)上の各点(branchRadiusAtFractionで太さも考慮)が、
+ * trunkPoints/trunkRadii(弓本体の密なサンプル点列と局所半径)が表す弓本体の管の外側に
+ * 出るfractionを、実際の距離判定で求める(見つからない場合は0.9で頭打ちにして退化した
+ * チューブを避ける)。粗い線形探索で「まだ内側」から「外側」に切り替わる区間を
+ * 見つけたあと、その区間だけを二分探索で絞り込むことで、分枝の全長に対して弓本体の
+ * 半径が相対的に小さい場合でも、表面ぎりぎりの位置を精度良く求める
+ * (ARCH_BRANCH_CLEARANCE_REFINE_ITERATIONSのコメント参照)。 */
+function findBranchClearanceFraction(
+  branchCurve: CatmullRomCurve3,
+  branchRadiusAtFraction: (fraction: number) => number,
+  trunkPoints: Vector3[],
+  trunkRadii: number[],
+): number {
+  const clears = (fraction: number) =>
+    branchPointClearsTrunk(branchCurve.getPoint(fraction), branchRadiusAtFraction(fraction), trunkPoints, trunkRadii);
+  let lowerBoundInside = 0;
+  let upperBoundOutside = -1;
+  for (let i = 0; i <= ARCH_BRANCH_CLEARANCE_SEARCH_COUNT; i++) {
+    const fraction = i / ARCH_BRANCH_CLEARANCE_SEARCH_COUNT;
+    if (fraction >= 0.9) return 0.9;
+    if (clears(fraction)) {
+      upperBoundOutside = fraction;
+      break;
+    }
+    lowerBoundInside = fraction;
+  }
+  if (upperBoundOutside < 0) return 0.9;
+  for (let i = 0; i < ARCH_BRANCH_CLEARANCE_REFINE_ITERATIONS; i++) {
+    const mid = (lowerBoundInside + upperBoundOutside) / 2;
+    if (clears(mid)) {
+      upperBoundOutside = mid;
+    } else {
+      lowerBoundInside = mid;
+    }
+  }
+  return upperBoundOutside;
+}
+
+/** 分枝の起点(論理t値originLogicalT)を中心に、弓本体の中心線を前後windowHalfWidthだけ
+ * 切り出した密なサンプル点列と各点の局所半径。findBranchClearanceFractionが
+ * 3分枝共通で使う判定基準。
+ *
+ * 当初は幹区間(ascendingEnd→弓頂部)だけを基準にしていたが、左鎖骨下動脈は弓頂部より
+ * 先(下行大動脈側)から分岐するため、その起点付近に比較対象の点が一つも無く、
+ * クリアランスの探索が正しく機能しなかった(実測: 左鎖骨下動脈だけ隙間が縮まらない)。
+ * かといって弓全体(幹区間+下行大動脈側)をまとめて基準にすると、弓はU字型に大きく
+ * 湾曲しているため、分枝の起点から見て「経路上は遠いが直線距離では近い」弓の別の部分
+ * (例: 下行大動脈側の点が、上行大動脈側の分枝の起点から直線距離では近くに来る)まで
+ * クリアランス対象に含んでしまい、実際には無関係な場所までかわそうとして不必要に
+ * 大きく浮いてしまうことを実測で確認した。分枝自身の起点を中心にした局所的な窓
+ * (弓の全長からみて短い範囲)だけを対象にすることで、この汚染を避けつつ、
+ * 上行大動脈側・下行大動脈側どちらが起点の分枝にも対応する。
+ *
+ * windowHalfWidthは3分枝で共通の値にできない——各分枝の起点位置における弓自体の
+ * 湾曲の強さ・分枝自身の向き(扇状に開くための固定方向)との関係で、「実際に隣接する
+ * 弓本体の点」を過不足なく含める窓の広さが異なる(実測: 腕頭動脈は広め、左総頸動脈は
+ * 狭め、左鎖骨下動脈はその中間の窓でちょうど良い結果になることを確認した——窓が
+ * 広すぎると本来無関係な弓の別の場所まで基準に含めて不必要に浮き、狭すぎると
+ * 実際に隣接する点を見落として埋め込みが残る)。呼び出し側(3分枝それぞれの
+ * build*BranchGeometry)が自分に合った値を渡す。 */
+const BRACHIOCEPHALIC_CLEARANCE_WINDOW_HALF_WIDTH = 0.12;
+const LEFT_COMMON_CAROTID_CLEARANCE_WINDOW_HALF_WIDTH = 0.06;
+const LEFT_SUBCLAVIAN_CLEARANCE_WINDOW_HALF_WIDTH = 0.09;
+
+function sampleLocalArchWindowForBranchClearance(
+  frame: AorticRootFrame,
+  heartScale: number,
+  originLogicalT: number,
+  windowHalfWidth: number,
+): { points: Vector3[]; radii: number[] } {
+  const startT = Math.max(0, originLogicalT - windowHalfWidth);
+  const endT = Math.min(1, originLogicalT + windowHalfWidth);
+  const curve = buildAorticArchCurve(frame, heartScale);
+  const sampleCount = 40;
+  const points: Vector3[] = [];
+  const radii: number[] = [];
+  for (let i = 0; i <= sampleCount; i++) {
+    const t = startT + (i / sampleCount) * (endT - startT);
+    points.push(curve.getPoint(toArchCurveT(t)));
+    radii.push(evaluateAorticArchRadius(frame, t));
+  }
+  return { points, radii };
+}
+
+/** origin起点・originTangent接線のblendedArchBranchCurve(sampleBlendedArchBranchと
+ * 同一の形状)のうち、startFraction〜1の区間だけをサンプルする
+ * (findBranchClearanceFraction参照)。カテーテル経路(sampleBlendedArchBranch)と
+ * 同じ曲線から取るため、可視化ジオメトリとカテーテル経路が食い違うことはない。
+ * evaluateRadiusはoriginを基準にした通常のfraction(0〜1)のまま評価する。 */
+function sampleVisibleArchBranch(
+  origin: Vector3,
+  originTangent: Vector3,
+  end: Vector3,
+  startFraction: number,
+  sampleCount: number,
+  evaluateRadius: (fraction: number) => number,
+): { points: Vector3[]; radii: number[] } {
+  const curve = buildBlendedArchBranchCurve(origin, originTangent, end);
+  const points: Vector3[] = [];
+  const radii: number[] = [];
+  for (let i = 0; i <= sampleCount; i++) {
+    const fraction = startFraction + (i / sampleCount) * (1 - startFraction);
+    points.push(curve.getPoint(fraction));
+    radii.push(evaluateRadius(fraction));
+  }
+  return { points, radii };
+}
+
+/**
  * 腕頭動脈のジオメトリを構築する。ガイディングカテーテルの橈骨アプローチ(右橈骨、
  * 腕頭動脈経由)はこの分岐に沿って体外側へ向かうため(guideDeviceMesh.ts参照)、
  * この分岐が無いとカテーテルが血管の外側(何もない空間)を通っているように見えてしまう。
  */
 export function buildBrachiocephalicBranchGeometry(frame: AorticRootFrame, heartScale: number): BufferGeometry {
-  const points = sampleAorticBrachiocephalicBranch(frame, heartScale, BRACHIOCEPHALIC_SAMPLE_COUNT);
-  const radii = points.map((_, i) => evaluateAorticBrachiocephalicRadius(frame, i / BRACHIOCEPHALIC_SAMPLE_COUNT));
+  const { brachiocephalicOrigin, brachiocephalicEnd } = computeAorticArchControlPoints(frame, heartScale);
+  const originTangent = getAorticArchTangentAt(frame, heartScale, BRACHIOCEPHALIC_ORIGIN_T_FRACTION);
+  const branchCurve = buildBlendedArchBranchCurve(brachiocephalicOrigin, originTangent, brachiocephalicEnd);
+  const { points: trunkPoints, radii: trunkRadii } = sampleLocalArchWindowForBranchClearance(
+    frame,
+    heartScale,
+    BRACHIOCEPHALIC_ORIGIN_T_FRACTION,
+    BRACHIOCEPHALIC_CLEARANCE_WINDOW_HALF_WIDTH,
+  );
+  const evaluateRadius = (fraction: number) => evaluateAorticBrachiocephalicRadius(frame, fraction);
+  const startFraction = findBranchClearanceFraction(branchCurve, evaluateRadius, trunkPoints, trunkRadii);
+  const { points, radii } = sampleVisibleArchBranch(
+    brachiocephalicOrigin,
+    originTangent,
+    brachiocephalicEnd,
+    startFraction,
+    BRACHIOCEPHALIC_SAMPLE_COUNT,
+    evaluateRadius,
+  );
   return buildLinearArchBranchGeometry(points, radii);
 }
 
 /** 左総頸動脈のジオメトリを構築する(可視化専用、カテーテル経路には使わない)。 */
 export function buildLeftCommonCarotidBranchGeometry(frame: AorticRootFrame, heartScale: number): BufferGeometry {
-  const points = sampleAorticLeftCommonCarotidBranch(frame, heartScale, LEFT_COMMON_CAROTID_SAMPLE_COUNT);
-  const radii = points.map((_, i) => evaluateAorticLeftCommonCarotidRadius(frame, i / LEFT_COMMON_CAROTID_SAMPLE_COUNT));
+  const { leftCommonCarotidOrigin, leftCommonCarotidEnd } = computeAorticArchControlPoints(frame, heartScale);
+  const originTangent = getAorticArchTangentAt(frame, heartScale, LEFT_COMMON_CAROTID_ORIGIN_T_FRACTION);
+  const branchCurve = buildBlendedArchBranchCurve(leftCommonCarotidOrigin, originTangent, leftCommonCarotidEnd);
+  const { points: trunkPoints, radii: trunkRadii } = sampleLocalArchWindowForBranchClearance(
+    frame,
+    heartScale,
+    LEFT_COMMON_CAROTID_ORIGIN_T_FRACTION,
+    LEFT_COMMON_CAROTID_CLEARANCE_WINDOW_HALF_WIDTH,
+  );
+  const evaluateRadius = (fraction: number) => evaluateAorticLeftCommonCarotidRadius(frame, fraction);
+  const startFraction = findBranchClearanceFraction(branchCurve, evaluateRadius, trunkPoints, trunkRadii);
+  const { points, radii } = sampleVisibleArchBranch(
+    leftCommonCarotidOrigin,
+    originTangent,
+    leftCommonCarotidEnd,
+    startFraction,
+    LEFT_COMMON_CAROTID_SAMPLE_COUNT,
+    evaluateRadius,
+  );
   return buildLinearArchBranchGeometry(points, radii);
 }
 
 /** 左鎖骨下動脈のジオメトリを構築する(可視化専用、カテーテル経路には使わない)。 */
 export function buildLeftSubclavianBranchGeometry(frame: AorticRootFrame, heartScale: number): BufferGeometry {
-  const points = sampleAorticLeftSubclavianBranch(frame, heartScale, LEFT_SUBCLAVIAN_SAMPLE_COUNT);
-  const radii = points.map((_, i) => evaluateAorticLeftSubclavianRadius(frame, i / LEFT_SUBCLAVIAN_SAMPLE_COUNT));
+  const { leftSubclavianOrigin, leftSubclavianEnd } = computeAorticArchControlPoints(frame, heartScale);
+  const originTangent = getAorticArchTangentAt(frame, heartScale, LEFT_SUBCLAVIAN_ORIGIN_T_FRACTION);
+  const branchCurve = buildBlendedArchBranchCurve(leftSubclavianOrigin, originTangent, leftSubclavianEnd);
+  const { points: trunkPoints, radii: trunkRadii } = sampleLocalArchWindowForBranchClearance(
+    frame,
+    heartScale,
+    LEFT_SUBCLAVIAN_ORIGIN_T_FRACTION,
+    LEFT_SUBCLAVIAN_CLEARANCE_WINDOW_HALF_WIDTH,
+  );
+  const evaluateRadius = (fraction: number) => evaluateAorticLeftSubclavianRadius(frame, fraction);
+  const startFraction = findBranchClearanceFraction(branchCurve, evaluateRadius, trunkPoints, trunkRadii);
+  const { points, radii } = sampleVisibleArchBranch(
+    leftSubclavianOrigin,
+    originTangent,
+    leftSubclavianEnd,
+    startFraction,
+    LEFT_SUBCLAVIAN_SAMPLE_COUNT,
+    evaluateRadius,
+  );
   return buildLinearArchBranchGeometry(points, radii);
 }
 
