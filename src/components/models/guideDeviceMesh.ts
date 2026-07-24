@@ -12,7 +12,7 @@
 // 目的ではない)。
 
 import { CatmullRomCurve3, Vector3 } from "three";
-import type { BufferGeometry, Mesh } from "three";
+import type { BufferGeometry, Color, Mesh } from "three";
 import { ConvexHull } from "three/addons/math/ConvexHull.js";
 import type { VesselId } from "../../types/anatomy";
 import type { GuideAccessRoute } from "../../types/guideDevice";
@@ -396,7 +396,7 @@ function polylineLength(points: Vector3[]): number {
  * 区間での見かけ上の折れの両方)。平均弧長で割ることで、真の(サンプリング密度に
  * 依存しない)曲率を得られ、この不具合が構造的に起こらなくなる。
  */
-function computeCurvatureVectors(points: Vector3[]): Vector3[] {
+export function computeCurvatureVectors(points: Vector3[]): Vector3[] {
   const vectors = points.map(() => new Vector3());
   for (let i = 1; i < points.length - 1; i++) {
     const segmentIn = points[i].clone().sub(points[i - 1]);
@@ -1292,10 +1292,19 @@ const WIRE_RADIAL_SEGMENTS = 10;
  * 起点に、進行度に応じて弧長に沿った先頭部分だけを表示する(=カテーテル先端が
  * 体外側からオスティウムへ向かって進んでいくように見える)。
  */
+/**
+ * @param pointColors 指定すると、guideCatheterStress.tsのバックアップ力ヒートマップ用の
+ * 頂点色として焼き込む(未指定の場合は従来通り単色マテリアルで描画される)。
+ * `path.fullSplinePoints`と1対1対応(同じ長さ・同じ添字)の配列であることが前提——
+ * 以下の`points`配列に対して行うスライス・追加操作を、この関数呼び出し内で
+ * `colors`配列にも全く同じ添字操作で並行して適用し、2つの配列が食い違わない
+ * ようにする(ここがずれるとbuildTubeFromFrameが頂点色を誤った点に割り当ててしまう)。
+ */
 export function buildGuideCatheterGeometry(
   path: GuideCatheterPath,
   catheterRadius: number,
   catheterProgress: number,
+  pointColors?: Color[] | null,
 ): BufferGeometry {
   const progress = Math.max(0, Math.min(1, catheterProgress));
   const total = path.fullSplinePoints.length;
@@ -1312,13 +1321,24 @@ export function buildGuideCatheterGeometry(
 
   const points = path.fullSplinePoints.slice(0, lowerIndex + 1).map((p) => p.clone());
   const last = points[points.length - 1];
-  if (!last || last.distanceToSquared(exactTip) > 1e-10) points.push(exactTip);
-  if (points.length < 2) points.push(exactTip.clone().addScalar(1e-4));
+  const needsTipPush = !last || last.distanceToSquared(exactTip) > 1e-10;
+  if (needsTipPush) points.push(exactTip);
+  const needsPad = points.length < 2;
+  if (needsPad) points.push(exactTip.clone().addScalar(1e-4));
+
+  let colors: Color[] | undefined;
+  if (pointColors && pointColors.length === total) {
+    const tipColor =
+      lowerIndex + 1 < total ? pointColors[lowerIndex].clone().lerp(pointColors[lowerIndex + 1], frac) : pointColors[total - 1].clone();
+    colors = pointColors.slice(0, lowerIndex + 1).map((c) => c.clone());
+    if (needsTipPush) colors.push(tipColor);
+    if (needsPad) colors.push(tipColor.clone());
+  }
 
   const radii = points.map(() => catheterRadius);
   // スプライン自体が既に滑らかなため、buildTubeFromPoints既定の強い平滑化は不要
   // (かけると意図したJカーブの形が鈍る)。
-  return buildTubeFromPoints(points, radii, CATHETER_RADIAL_SEGMENTS, 0);
+  return buildTubeFromPoints(points, radii, CATHETER_RADIAL_SEGMENTS, 0, undefined, colors);
 }
 
 /**

@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { Html, Line } from "@react-three/drei";
-import { MeshStandardMaterial } from "three";
+import { MeshBasicMaterial, MeshStandardMaterial } from "three";
 import type { Mesh, Vector3 } from "three";
 import type { VesselId } from "../../types/anatomy";
 import type { GuideAccessRoute } from "../../types/guideDevice";
@@ -18,6 +18,7 @@ import {
   computeHeartWidth,
   useGuideCatheterGeometry,
   useGuideCatheterPath,
+  useGuideCatheterStressColors,
   useGuideWireGeometry,
 } from "./useGuideDevicePath";
 
@@ -198,13 +199,21 @@ export function GuideDeviceMeshes({ heartMesh, heartCentroid, graphs, detectedAo
   const catheterProgress = Math.min(1, guideDevice.insertionPhase);
   const wireProgress = Math.max(0, guideDevice.insertionPhase - 1);
 
-  const catheterGeometry = useGuideCatheterGeometry(catheterPath, catheterRadius, catheterProgress);
+  // Phase 10: バックアップ力ヒートマップ用の頂点色(guideCatheterStress.ts参照)。
+  // 対象血管・アクセスルート等が変わってcatheterPathが再計算されたときだけ再計算する。
+  const stressColors = useGuideCatheterStressColors(catheterPath, guideDevice.showStressHeatmap);
+  const catheterGeometry = useGuideCatheterGeometry(catheterPath, catheterRadius, catheterProgress, stressColors);
   const wireGeometry = useGuideWireGeometry(graph, guideDevice.targetBranchId, wireRadius, wireProgress);
 
   const catheterMaterial = useMemo(
     () => new MeshStandardMaterial({ color: "#3a3d42", roughness: 0.4, metalness: 0.2 }),
     [],
   );
+  // バックアップ力ヒートマップ表示中は、頂点色(色計算の結果そのもの)がシーンの照明で
+  // 歪んで見えないよう、非ライティングのMeshBasicMaterialに切り替える
+  // (HeartPerfusionOverlay.tsxの灌流ヒートマップと同じ狙い)。
+  const catheterStressMaterial = useMemo(() => new MeshBasicMaterial({ vertexColors: true }), []);
+  const activeCatheterMaterial = guideDevice.showStressHeatmap && stressColors ? catheterStressMaterial : catheterMaterial;
   const wireMaterial = useMemo(
     () => new MeshStandardMaterial({ color: "#d9dce1", roughness: 0.25, metalness: 0.85 }),
     [],
@@ -214,7 +223,7 @@ export function GuideDeviceMeshes({ heartMesh, heartCentroid, graphs, detectedAo
 
   return (
     <>
-      {guideDevice.showCatheter && catheterGeometry && <mesh geometry={catheterGeometry} material={catheterMaterial} />}
+      {guideDevice.showCatheter && catheterGeometry && <mesh geometry={catheterGeometry} material={activeCatheterMaterial} />}
       {guideDevice.showWire && wireGeometry && <mesh geometry={wireGeometry} material={wireMaterial} />}
       {guideDevice.showCatheterDebugPath && catheterPath && (
         <CatheterDebugPath

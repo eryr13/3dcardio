@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Box3, Mesh, SphereGeometry, Vector3 } from "three";
+import { buildGuideCatheterBackupForceColors, computeGuideCatheterBackupForceProfile } from "./guideCatheterStress";
 import {
   ARCH_TRUNK_T_FRACTION,
   BRACHIOCEPHALIC_ORIGIN_T_FRACTION,
@@ -202,6 +203,30 @@ describe("computeGuideCatheterPath / buildGuideCatheterGeometry", () => {
       minDistAtEnd = Math.min(minDistAtEnd, d);
     }
     expect(minDistAtEnd).toBeLessThan(0.06);
+  });
+
+  it("Phase 10: buildGuideCatheterGeometry with pointColors keeps the color attribute's vertex count aligned with position, at several progress values", () => {
+    // Regression for the stress-heatmap wiring (guideCatheterStress.ts): pointColors must be
+    // sliced/padded with exactly the same index operations as the underlying points array, or the
+    // color attribute silently ends up shorter/longer than position and vertex colors misalign.
+    const path = computeGuideCatheterPath(graph, heartCentroid, heartScale, "RCA", "radial", null, null)!;
+    const profile = computeGuideCatheterBackupForceProfile(path.fullSplinePoints);
+    const pointColors = buildGuideCatheterBackupForceColors(profile);
+    expect(pointColors.length).toBe(path.fullSplinePoints.length);
+
+    for (const progress of [0, 0.3, 1]) {
+      const geometry = buildGuideCatheterGeometry(path, 0.05, progress, pointColors);
+      const position = geometry.getAttribute("position");
+      const color = geometry.getAttribute("color");
+      expect(color).toBeDefined();
+      expect(color.count).toBe(position.count);
+    }
+  });
+
+  it("Phase 10: buildGuideCatheterGeometry without pointColors omits the color attribute (backward compatibility)", () => {
+    const path = computeGuideCatheterPath(graph, heartCentroid, heartScale, "RCA", "radial", null, null)!;
+    const geometry = buildGuideCatheterGeometry(path, 0.05, 0.5);
+    expect(geometry.getAttribute("color")).toBeUndefined();
   });
 
   it("tip direction fits the ostium's own origin direction exactly (guiding catheter engagement, not an arbitrary hook)", () => {

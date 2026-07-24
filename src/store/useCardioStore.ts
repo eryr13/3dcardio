@@ -206,6 +206,7 @@ interface CardioStore {
   setGuideDeviceInsertionDuration: (seconds: number) => void;
   setGuideDeviceAccessRoute: (route: GuideAccessRoute) => void;
   setGuideDeviceShowDebugPath: (show: boolean) => void;
+  setGuideDeviceShowStressHeatmap: (show: boolean) => void;
   /**
    * カテーテル・ワイヤーの現在の配置(先端位置・向き等)。Phase 10のバックアップ力
    * 簡易評価が参照しやすいよう、GuideDeviceMeshes.tsx/CineAnatomyModel.tsxが
@@ -354,6 +355,7 @@ const initialGuideDevice: GuideDeviceState = {
   playing: false,
   insertionDurationSeconds: DEFAULT_INSERTION_DURATION_SECONDS,
   showCatheterDebugPath: false,
+  showStressHeatmap: false,
 };
 
 export const useCardioStore = create<CardioStore>((set) => ({
@@ -608,6 +610,9 @@ export const useCardioStore = create<CardioStore>((set) => ({
 
   setGuideDeviceShowDebugPath: (show) =>
     set((state) => ({ guideDevice: { ...state.guideDevice, showCatheterDebugPath: show } })),
+
+  setGuideDeviceShowStressHeatmap: (show) =>
+    set((state) => ({ guideDevice: { ...state.guideDevice, showStressHeatmap: show } })),
 
   setGuideDeviceTargetVessel: (vesselId) =>
     set((state) => ({

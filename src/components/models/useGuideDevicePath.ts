@@ -1,9 +1,13 @@
 import { useMemo } from "react";
 import { Box3, Vector3 } from "three";
-import type { Mesh } from "three";
+import type { Color, Mesh } from "three";
 import type { VesselId } from "../../types/anatomy";
 import type { GuideAccessRoute } from "../../types/guideDevice";
 import type { AorticRootFrame } from "./aorticRootMesh";
+import {
+  buildGuideCatheterBackupForceColors,
+  computeGuideCatheterBackupForceProfile,
+} from "./guideCatheterStress";
 import {
   buildGuideCatheterGeometry,
   buildGuideWireGeometry,
@@ -76,12 +80,34 @@ export function useGuideCatheterPath(
   }, [graph, heartCentroid, heartScale, vesselId, accessRoute, aorticRootFrame, heartMesh]);
 }
 
-/** カテーテルの進行度に応じた表示用ジオメトリをメモ化するフック。 */
-export function useGuideCatheterGeometry(path: GuideCatheterPath | null, catheterRadius: number, catheterProgress: number) {
+/** カテーテルの進行度に応じた表示用ジオメトリをメモ化するフック。pointColorsを渡すと
+ * (useGuideCatheterStressColors参照)、その進行度までの区間に対応する頂点色を
+ * 焼き込んだジオメトリになる。 */
+export function useGuideCatheterGeometry(
+  path: GuideCatheterPath | null,
+  catheterRadius: number,
+  catheterProgress: number,
+  pointColors?: Color[] | null,
+) {
   return useMemo(() => {
     if (!path) return null;
-    return buildGuideCatheterGeometry(path, catheterRadius, catheterProgress);
-  }, [path, catheterRadius, catheterProgress]);
+    return buildGuideCatheterGeometry(path, catheterRadius, catheterProgress, pointColors);
+  }, [path, catheterRadius, catheterProgress, pointColors]);
+}
+
+/**
+ * Phase 10: カテーテルの経路形状からEuler-Bernoulli梁理論で求めた、相対的な
+ * バックアップ力(血管壁からの接触反力の目安)を頂点色に変換してメモ化するフック
+ * (guideCatheterStress.ts参照)。対象血管・アクセスルート等が変わってpathが
+ * 再計算されたときだけ再計算し、挿入の進行度(アニメーション)が変わるだけでは
+ * 再計算しない——進行度に応じた区間切り出しはuseGuideCatheterGeometry側で行う。
+ */
+export function useGuideCatheterStressColors(path: GuideCatheterPath | null, enabled: boolean): Color[] | null {
+  return useMemo(() => {
+    if (!enabled || !path) return null;
+    const profile = computeGuideCatheterBackupForceProfile(path.fullSplinePoints);
+    return buildGuideCatheterBackupForceColors(profile);
+  }, [path, enabled]);
 }
 
 /**

@@ -42,6 +42,7 @@ export function GuideDeviceControls() {
   const setGuideDeviceInsertionDuration = useCardioStore((s) => s.setGuideDeviceInsertionDuration);
   const setGuideDeviceAccessRoute = useCardioStore((s) => s.setGuideDeviceAccessRoute);
   const setGuideDeviceShowDebugPath = useCardioStore((s) => s.setGuideDeviceShowDebugPath);
+  const setGuideDeviceShowStressHeatmap = useCardioStore((s) => s.setGuideDeviceShowStressHeatmap);
 
   const graph = useMemo(() => getVesselGraph(guideDevice.targetVesselId), [guideDevice.targetVesselId]);
 
@@ -152,6 +153,23 @@ export function GuideDeviceControls() {
             密サンプリングした経路全体(明るい線)を、心臓メッシュ越しでも常に手前に表示します。
             経路が意図した領域を通っていない場合の原因切り分け用です。
           </p>
+
+          <label className="segment-mode-toggle">
+            <input
+              type="checkbox"
+              checked={guideDevice.showStressHeatmap}
+              onChange={(e) => setGuideDeviceShowStressHeatmap(e.target.checked)}
+            />
+            バックアップ力ヒートマップを表示
+          </label>
+          {guideDevice.showStressHeatmap && (
+            <p className="panel-note">
+              カテーテルの曲がり方(曲率の変化)から求めた、血管壁を押している可能性が高い区間の
+              目安を色で示します(グレー=反力が小さい、赤〜オレンジ=反力が大きい=バックアップが
+              強い目安)。実測データに基づく力学シミュレーションではなく、実際のカテーテルの曲げ
+              剛性(材料物性)も使っていない、経路の中での相対的な指標です。
+            </p>
+          )}
 
           <div className="cine-transport">
             <button type="button" onClick={guideDevice.playing ? () => setGuideDevicePlaying(false) : handlePlay}>

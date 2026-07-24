@@ -41,4 +41,11 @@ export interface GuideDeviceState {
    * 通常のシーンには含まれない解剖学的に無意味な補助表示のため既定は非表示。
    */
   showCatheterDebugPath: boolean;
+  /**
+   * Phase 10: カテーテルの経路形状からEuler-Bernoulli梁理論で求めた、相対的な
+   * バックアップ力(血管壁からの接触反力の目安)のヒートマップ表示(components/models/
+   * guideCatheterStress.ts参照)。ONにするとカテーテルの単色マテリアルの代わりに
+   * 頂点色ベースのマテリアルへ切り替わる。既定は非表示(通常の見た目を保つため)。
+   */
+  showStressHeatmap: boolean;
 }
